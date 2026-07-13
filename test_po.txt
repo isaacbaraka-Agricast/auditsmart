@@ -1,0 +1,14 @@
+PURCHASE ORDER
+
+PO Number: PO-2026-330
+Date: 10 July 2026
+
+Vendor: Kigali Office Supplies Ltd
+        KG 11 Ave, Kigali, Rwanda
+
+Item Description: Ergonomic office chairs
+Quantity: 40 units
+Price: 85,000 RWF each
+Total Amount: 3,400,000 RWF
+
+Delivery Date: Deliver by 25 July 2026 to University of Kigali main campus.

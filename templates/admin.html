@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AuditSmart — Admin Panel</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"/>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet"/>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:'Segoe UI',sans-serif; background:#f0f2f5; }
+    .sidebar {
+      position:fixed; top:0; left:0;
+      width:240px; height:100vh;
+      background:linear-gradient(180deg,#7b1fa2,#4a148c);
+      display:flex; flex-direction:column; z-index:100;
+    }
+    .sidebar-logo { padding:24px 20px; border-bottom:1px solid rgba(255,255,255,0.1); }
+    .sidebar-logo h2 { color:white; font-size:18px; font-weight:800; }
+    .sidebar-logo p { color:rgba(255,255,255,0.5); font-size:10px; }
+    .nav-item {
+      padding:13px 20px; color:rgba(255,255,255,0.6);
+      cursor:pointer; display:flex; align-items:center;
+      gap:12px; font-size:14px; font-weight:500;
+      transition:all 0.2s; border-left:3px solid transparent;
+    }
+    .nav-item:hover, .nav-item.active {
+      background:rgba(255,255,255,0.1);
+      color:white; border-left-color:#ce93d8;
+    }
+    .sidebar-footer {
+      margin-top:auto; padding:16px 20px;
+      border-top:1px solid rgba(255,255,255,0.1);
+      color:rgba(255,255,255,0.4); font-size:10px;
+    }
+    .main { margin-left:240px; min-height:100vh; }
+    .topbar {
+      background:white; padding:16px 28px;
+      display:flex; align-items:center;
+      justify-content:space-between;
+      box-shadow:0 2px 8px rgba(0,0,0,0.06);
+      position:sticky; top:0; z-index:99;
+    }
+    .topbar h4 { font-weight:800; color:#4a148c; margin:0; }
+    .content { padding:28px; }
+    .kpi-card {
+      background:white; border-radius:16px;
+      padding:22px; box-shadow:0 2px 12px rgba(0,0,0,0.06);
+      border-top:4px solid #7b1fa2;
+    }
+    .kpi-card .value { font-size:36px; font-weight:900; color:#4a148c; }
+    .kpi-card .label { font-size:12px; color:#888; margin-top:6px; }
+    .kpi-card .icon { font-size:28px; float:right; margin-top:-8px; }
+    .page { display:none; }
+    .page.active { display:block; }
+    .doc-table { background:white; border-radius:16px; overflow:hidden; box-shadow:0 2px 12px rgba(0,0,0,0.06); }
+    .doc-table table { margin:0; }
+    .doc-table th { background:#4a148c; color:white; font-size:12px; padding:12px 16px; }
+    .doc-table td { padding:10px 16px; font-size:13px; vertical-align:middle; }
+    .doc-table tr:hover td { background:#f9f0ff; }
+    .badge-compliant { background:#e8f5e9; color:#2e7d32; padding:4px 10px; border-radius:10px; font-size:11px; font-weight:700; }
+    .badge-issues { background:#fff3e0; color:#e65100; padding:4px 10px; border-radius:10px; font-size:11px; font-weight:700; }
+    .badge-type { background:#ede7f6; color:#4a148c; padding:4px 10px; border-radius:10px; font-size:11px; font-weight:700; }
+    .badge-admin { background:#fce4ec; color:#c62828; padding:4px 10px; border-radius:10px; font-size:11px; font-weight:700; }
+    .badge-user { background:#e3f2fd; color:#1565c0; padding:4px 10px; border-radius:10px; font-size:11px; font-weight:700; }
+  </style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="sidebar-logo">
+    <h2>🛡️ Admin Panel</h2>
+    <p>AuditSmart — Kigali Global Suppliers</p>
+  </div>
+  <div style="padding:16px 0;">
+    <div class="nav-item active" onclick="showPage('overview')" id="nav-overview">
+      <i class="fas fa-chart-pie"></i> Overview
+    </div>
+    <div class="nav-item" onclick="showPage('users')" id="nav-users">
+      <i class="fas fa-users"></i> All Users
+    </div>
+    <div class="nav-item" onclick="showPage('documents')" id="nav-documents">
+      <i class="fas fa-folder-open"></i> All Documents
+    </div>
+    <div class="nav-item" onclick="window.location.href='/dashboard'" id="nav-back">
+      <i class="fas fa-arrow-left"></i> Back to Dashboard
+    </div>
+  </div>
+  <div class="sidebar-footer">
+    Ruhorimbere Fred · 2305001581<br/>
+    Supervisor: Dr. Eustach Uwimana<br/>
+    University of Kigali · BBIT 2026
+  </div>
+</div>
+
+<div class="main">
+  <div class="topbar">
+    <h4 id="pageTitle">🛡️ Admin Overview</h4>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <div style="background:#4a148c;color:white;border-radius:20px;
+        padding:6px 16px;font-size:13px;font-weight:600;">
+        <i class="fas fa-user-shield me-2"></i>
+        <span id="adminName">Admin</span>
+      </div>
+      <button class="btn btn-outline-danger btn-sm" onclick="logout()">
+        <i class="fas fa-sign-out-alt"></i> Logout
+      </button>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- OVERVIEW PAGE -->
+    <div class="page active" id="page-overview">
+      <div class="row g-3 mb-4">
+        <div class="col-md-3">
+          <div class="kpi-card">
+            <div class="icon">👥</div>
+            <div class="value" id="kpiUsers">0</div>
+            <div class="label">Total Users</div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="kpi-card" style="border-top-color:#1565c0;">
+            <div class="icon">📄</div>
+            <div class="value" style="color:#1565c0;" id="kpiDocs">0</div>
+            <div class="label">Total Documents</div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="kpi-card" style="border-top-color:#2e7d32;">
+            <div class="icon">✅</div>
+            <div class="value" style="color:#2e7d32;" id="kpiCompliant">0</div>
+            <div class="label">Compliant Documents</div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="kpi-card" style="border-top-color:#e65100;">
+            <div class="icon">⚠️</div>
+            <div class="value" style="color:#e65100;" id="kpiIssues">0</div>
+            <div class="label">Documents with Issues</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Company info -->
+      <div class="card border-0 shadow-sm mb-4" style="border-radius:16px;">
+        <div class="card-body p-4">
+          <h5 style="color:#4a148c;font-weight:800;">
+            🏢 Kigali Global Suppliers and Contractors
+          </h5>
+          <p style="color:#888;font-size:13px;margin-top:4px;">
+            Document Management & Compliance Audit System
+          </p>
+          <hr/>
+          <div class="row g-3">
+            <div class="col-md-4">
+              <div style="background:#f9f0ff;border-radius:12px;padding:16px;">
+                <div style="font-size:12px;color:#888;">System</div>
+                <div style="font-weight:700;color:#4a148c;">AuditSmart v1.0</div>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <div style="background:#f9f0ff;border-radius:12px;padding:16px;">
+                <div style="font-size:12px;color:#888;">AI Models</div>
+                <div style="font-weight:700;color:#4a148c;">LinearSVC + TF-IDF</div>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <div style="background:#f9f0ff;border-radius:12px;padding:16px;">
+                <div style="font-size:12px;color:#888;">Document Types</div>
+                <div style="font-weight:700;color:#4a148c;">7 Categories</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Document types breakdown -->
+      <div class="card border-0 shadow-sm" style="border-radius:16px;">
+        <div class="card-body p-4">
+          <h6 style="color:#4a148c;font-weight:800;">📊 Documents by Type</h6>
+          <div id="byTypeList" style="margin-top:12px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- USERS PAGE -->
+    <div class="page" id="page-users">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h5 style="color:#4a148c;font-weight:800;margin:0;">👥 All Users</h5>
+        <button class="btn btn-sm" style="background:#4a148c;color:white;border-radius:10px;"
+          onclick="loadUsers()">
+          <i class="fas fa-sync-alt me-1"></i> Refresh
+        </button>
+      </div>
+      <div class="doc-table">
+        <table class="table table-hover mb-0">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Full Name</th>
+              <th>Email</th>
+              <th>Company</th>
+              <th>Role</th>
+              <th>Documents</th>
+              <th>Joined</th>
+            </tr>
+          </thead>
+          <tbody id="usersTableBody">
+            <tr><td colspan="7" style="text-align:center;color:#888;padding:30px;">
+              Loading users...
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- DOCUMENTS PAGE -->
+    <div class="page" id="page-documents">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h5 style="color:#4a148c;font-weight:800;margin:0;">📁 All Documents</h5>
+        <button class="btn btn-sm" style="background:#4a148c;color:white;border-radius:10px;"
+          onclick="loadAllDocuments()">
+          <i class="fas fa-sync-alt me-1"></i> Refresh
+        </button>
+      </div>
+      <div class="doc-table">
+        <table class="table table-hover mb-0">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Document</th>
+              <th>Type</th>
+              <th>Uploaded By</th>
+              <th>Confidence</th>
+              <th>Compliance</th>
+              <th>Status</th>
+              <th>Date</th>
+              <th>Report</th>
+            </tr>
+          </thead>
+          <tbody id="allDocsTableBody">
+            <tr><td colspan="9" style="text-align:center;color:#888;padding:30px;">
+              Loading documents...
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  const API   = 'http://127.0.0.1:5000';
+  const token = localStorage.getItem('token');
+  const user  = JSON.parse(localStorage.getItem('user') || '{}');
+
+  if (!token) window.location.href = '/';
+
+  document.getElementById('adminName').textContent = user.full_name || 'Admin';
+
+  loadStats();
+  loadUsers();
+  loadAllDocuments();
+
+  function showPage(page) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.getElementById('page-' + page).classList.add('active');
+    document.getElementById('nav-' + page).classList.add('active');
+    const titles = {
+      overview: '🛡️ Admin Overview',
+      users: '👥 All Users',
+      documents: '📁 All Documents',
+    };
+    document.getElementById('pageTitle').textContent = titles[page] || 'Admin';
+  }
+
+  async function loadStats() {
+    try {
+      const res  = await fetch(`${API}/api/admin/stats`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        document.getElementById('kpiUsers').textContent     = data.total_users;
+        document.getElementById('kpiDocs').textContent      = data.total_docs;
+        document.getElementById('kpiCompliant').textContent = data.compliant;
+        document.getElementById('kpiIssues').textContent    = data.issues;
+
+        const byType = document.getElementById('byTypeList');
+        if (data.by_type && data.by_type.length > 0) {
+          byType.innerHTML = data.by_type.map(t => `
+            <div style="display:flex;align-items:center;gap:12px;
+              padding:8px 0;border-bottom:1px solid #f0f0f0;">
+              <span class="badge-type">${t.doc_type}</span>
+              <div style="flex:1;background:#f0f0f0;border-radius:4px;height:8px;">
+                <div style="width:${Math.min(t.count * 20, 100)}%;
+                  background:#7b1fa2;height:8px;border-radius:4px;"></div>
+              </div>
+              <span style="font-weight:700;color:#4a148c;font-size:13px;">
+                ${t.count}
+              </span>
+            </div>
+          `).join('');
+        } else {
+          byType.innerHTML = '<p style="color:#888;font-size:13px;">No documents yet</p>';
+        }
+      }
+    } catch(e) { console.error(e); }
+  }
+
+  async function loadUsers() {
+    try {
+      const res  = await fetch(`${API}/api/admin/users`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      const tbody = document.getElementById('usersTableBody');
+
+      if (data.status !== 'success') {
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;
+          color:#c62828;padding:20px;">
+          ${data.message || 'Access denied. Admin only.'}
+        </td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = data.users.map((u, i) => `
+        <tr>
+          <td>${i + 1}</td>
+          <td><b>${u.full_name}</b></td>
+          <td style="color:#888;">${u.email}</td>
+          <td style="font-size:12px;">${u.company || 'N/A'}</td>
+          <td>
+            <span class="${u.role === 'admin' ? 'badge-admin' : 'badge-user'}">
+              ${u.role === 'admin' ? '🛡️ Admin' : '👤 User'}
+            </span>
+          </td>
+          <td style="font-weight:700;color:#4a148c;">${u.total_docs}</td>
+          <td style="color:#888;font-size:12px;">${u.created_at}</td>
+        </tr>
+      `).join('');
+    } catch(e) { console.error(e); }
+  }
+
+  async function loadAllDocuments() {
+    try {
+      const res  = await fetch(`${API}/api/admin/documents`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      const tbody = document.getElementById('allDocsTableBody');
+
+      if (data.status !== 'success') {
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;
+          color:#c62828;padding:20px;">
+          ${data.message || 'Access denied. Admin only.'}
+        </td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = data.documents.map((d, i) => `
+        <tr>
+          <td>${i + 1}</td>
+          <td><b>${d.original_name}</b></td>
+          <td><span class="badge-type">${d.doc_type}</span></td>
+          <td style="font-size:12px;">
+            <b>${d.full_name}</b><br/>
+            <span style="color:#888;">${d.email}</span>
+          </td>
+          <td>${d.confidence}%</td>
+          <td>
+            <div style="background:#e0e0e0;border-radius:4px;
+              height:8px;width:80px;overflow:hidden;">
+              <div style="width:${d.compliance_score}%;height:100%;
+                background:${d.compliance_score>=80?'#2e7d32':
+                d.compliance_score>=50?'#e65100':'#c62828'};"></div>
+            </div>
+            <span style="font-size:11px;">${d.compliance_score}%</span>
+          </td>
+          <td>
+            <span class="${d.compliance_score>=80?'badge-compliant':'badge-issues'}">
+              ${d.compliance_score>=80?'✅ Compliant':'⚠️ Issues'}
+            </span>
+          </td>
+          <td style="color:#888;font-size:12px;">${d.uploaded_at}</td>
+          <td>
+            <button onclick="window.open('${API}/api/report/${d.doc_id}','_blank')"
+              style="background:#4a148c;color:white;border:none;
+              border-radius:8px;padding:4px 10px;font-size:11px;cursor:pointer;">
+              📄 PDF
+            </button>
+          </td>
+        </tr>
+      `).join('');
+    } catch(e) { console.error(e); }
+  }
+
+  function logout() {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    window.location.href = '/';
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+PURCHASE ORDER
+
+PO Number: PO-2026-0045
+Date: 10 July 2026
+
+From: University of Kigali
+      KN 3 Road, Kigali, Rwanda
+
+To Vendor: Office Supplies Rwanda Ltd
+           KG 7 Avenue, Kigali, Rwanda
+
+Item Description:
+- 100 Office Chairs     @ 50,000 RWF each
+- 20 Office Desks       @ 120,000 RWF each
+- 500 Reams of Paper    @ 5,000 RWF each
+
+Total Price: 9,900,000 RWF
+
+Expected Delivery Date: 31 July 2026
+
+Authorized by: Procurement Officer

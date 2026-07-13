@@ -1,0 +1,21 @@
+INVOICE
+
+Invoice No: INV-2026-001
+Date: 10 July 2026
+
+From: ABC Technology Solutions Ltd
+      KG 5 Avenue, Kigali, Rwanda
+
+To: University of Kigali
+    KN 3 Road, Kigali, Rwanda
+
+Description of Items:
+- 20 Laptop Computers @ 400,000 RWF each
+- 5 Printers @ 200,000 RWF each
+
+Total Amount: 9,000,000 RWF
+
+Payment Terms: Payment due within 30 days from invoice date.
+Bank: Bank of Kigali, Account No: 00012345678
+
+Thank you for your business.
