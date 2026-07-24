@@ -15,10 +15,9 @@ import datetime
 import numpy as np
 import pandas as pd
 
-
 from flask import (
     Flask, request, jsonify,
-    render_template, redirect, url_for, session
+    render_template, redirect, url_for, session, send_file
 )
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
@@ -34,6 +33,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
+from sklearn.calibration import CalibratedClassifierCV
 
 # Database
 import mysql.connector
@@ -45,10 +45,13 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'auditsmart_secret_2026')
 CORS(app)
 
-UPLOAD_FOLDER = 'uploads'
+UPLOAD_FOLDER = '/tmp/uploads'
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
+
+# Create uploads folder on startup
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # =============================================================
 # DATABASE
@@ -90,7 +93,7 @@ DOCUMENT_TYPES = [
 ]
 
 # =============================================================
-# COMPLIANCE RULES — keywords required per document type
+# COMPLIANCE RULES
 # =============================================================
 COMPLIANCE_RULES = {
     'NDA': {
@@ -145,10 +148,14 @@ COMPLIANCE_RULES = {
         'Business Purpose':     ['purpose', 'business', 'objective'],
         'Profit Sharing':       ['profit', 'share', 'distribution', 'percent'],
         'Duration':             ['term', 'period', 'duration'],
-        'Termination Clause':   ['terminate', 'dissolution', 'dissolved', 'wind up', 'dissolve'],
+        'Termination Clause':   ['terminate', 'dissolution', 'dissolved', 'wind up'],
         'Governing Law':        ['governed', 'jurisdiction', 'law'],
     },
 }
+
+# =============================================================
+# TRAINING DATA
+# =============================================================
 TRAINING_DATA = {
     'NDA': [
         "This non-disclosure agreement is entered into between the parties. All confidential information shall remain secret and shall not be disclosed to any third party without prior written consent.",
@@ -270,11 +277,13 @@ TRAINING_DATA = {
         "This partnership agreement is between two software companies. Business objective develop and market software products. Profit and loss shared equally between partners. Duration 5 years. Termination 90 days written notice. Rwanda jurisdiction.",
     ],
 }
+
 # =============================================================
-# ML MODEL — Train on startup
+# ML MODEL
 # =============================================================
 _classifier = None
 _vectorizer = None
+
 def train_model():
     global _classifier, _vectorizer
     texts, labels = [], []
@@ -282,7 +291,6 @@ def train_model():
         for text in samples:
             texts.append(text)
             labels.append(label)
-            # Augment — add each sample 2 more times with small changes
             texts.append(text.lower())
             labels.append(label)
             texts.append(text.upper())
@@ -297,13 +305,11 @@ def train_model():
         analyzer='word',
     )
     X = _vectorizer.fit_transform(texts)
-
-    from sklearn.svm import LinearSVC
-    from sklearn.calibration import CalibratedClassifierCV
     svc = LinearSVC(C=1.0, max_iter=5000)
     _classifier = CalibratedClassifierCV(svc, cv=3)
     _classifier.fit(X, labels)
-    print('✅ AuditSmart ML model trained successfully with LinearSVC!')
+    print('✅ AuditSmart ML model trained successfully!')
+
 # =============================================================
 # HELPERS
 # =============================================================
@@ -335,21 +341,18 @@ def classify_document(text):
     if _classifier is None or _vectorizer is None:
         train_model()
     X = _vectorizer.transform([text])
-    predicted = _classifier.predict(X)[0]
-    proba     = _classifier.predict_proba(X)[0]
-    classes   = _classifier.classes_
+    predicted  = _classifier.predict(X)[0]
+    proba      = _classifier.predict_proba(X)[0]
+    classes    = _classifier.classes_
     confidence = round(float(max(proba)) * 100, 1)
-    top3 = sorted(
-        zip(classes, proba),
-        key=lambda x: x[1], reverse=True
-    )[:3]
+    top3 = sorted(zip(classes, proba), key=lambda x: x[1], reverse=True)[:3]
     return predicted, confidence, top3
 
 def audit_compliance(text, doc_type):
-    rules   = COMPLIANCE_RULES.get(doc_type, {})
-    results = {}
+    rules      = COMPLIANCE_RULES.get(doc_type, {})
+    results    = {}
     text_lower = text.lower()
-    passed = 0
+    passed     = 0
     for clause, keywords in rules.items():
         found = any(kw in text_lower for kw in keywords)
         results[clause] = found
@@ -387,25 +390,33 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
         cur.execute('''CREATE TABLE IF NOT EXISTS documents (
-            doc_id        INT AUTO_INCREMENT PRIMARY KEY,
-            user_id       INT NOT NULL,
-            filename      VARCHAR(255),
-            original_name VARCHAR(255),
-            doc_type      VARCHAR(50),
-            confidence    FLOAT,
+            doc_id           INT AUTO_INCREMENT PRIMARY KEY,
+            user_id          INT NOT NULL,
+            filename         VARCHAR(255),
+            original_name    VARCHAR(255),
+            doc_type         VARCHAR(50),
+            confidence       FLOAT,
             compliance_score INT,
             clauses_passed   INT,
             clauses_total    INT,
-            text_preview  TEXT,
-            uploaded_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            text_preview     TEXT,
+            uploaded_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )''')
         cur.execute('''CREATE TABLE IF NOT EXISTS audit_results (
-            result_id  INT AUTO_INCREMENT PRIMARY KEY,
-            doc_id     INT NOT NULL,
-            clause     VARCHAR(100),
-            status     BOOLEAN,
+            result_id INT AUTO_INCREMENT PRIMARY KEY,
+            doc_id    INT NOT NULL,
+            clause    VARCHAR(100),
+            status    BOOLEAN,
             FOREIGN KEY (doc_id) REFERENCES documents(doc_id)
+        )''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS feedback (
+            feedback_id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id     INT NOT NULL,
+            rating      INT NOT NULL,
+            category    VARCHAR(50),
+            message     TEXT,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
         db.commit()
         cur.close(); db.close()
@@ -419,11 +430,11 @@ def init_db():
 @app.route('/api/register', methods=['POST'])
 def register():
     try:
-        d        = request.get_json() or {}
-        name     = d.get('full_name', '').strip()
-        email    = d.get('email', '').strip().lower()
-        pwd      = d.get('password', '')
-        company  = d.get('company', '').strip()
+        d       = request.get_json() or {}
+        name    = d.get('full_name', '').strip()
+        email   = d.get('email', '').strip().lower()
+        pwd     = d.get('password', '')
+        company = d.get('company', '').strip()
         if not name or not email or not pwd:
             return jsonify({'status': 'error', 'message': 'All fields required'}), 400
         db  = get_db()
@@ -437,10 +448,11 @@ def register():
         cur.close(); db.close()
         token = generate_token(user_id, email)
         return jsonify({
-            'status': 'success',
+            'status':  'success',
             'message': 'Account created!',
-            'token': token,
-            'user': {'user_id': user_id, 'full_name': name, 'email': email, 'company': company}
+            'token':   token,
+            'user':    {'user_id': user_id, 'full_name': name,
+                        'email': email, 'company': company}
         })
     except mysql.connector.IntegrityError:
         return jsonify({'status': 'error', 'message': 'Email already registered'}), 409
@@ -454,7 +466,8 @@ def login():
         email = d.get('email', '').strip().lower()
         pwd   = d.get('password', '')
         if not email or not pwd:
-            return jsonify({'status': 'error', 'message': 'Email and password required'}), 400
+            return jsonify({'status': 'error',
+                'message': 'Email and password required'}), 400
         db  = get_db()
         cur = db.cursor(dictionary=True)
         cur.execute(
@@ -467,7 +480,7 @@ def login():
             token = generate_token(user['user_id'], user['email'])
             return jsonify({
                 'status': 'success',
-                'token': token,
+                'token':  token,
                 'user': {
                     'user_id':   user['user_id'],
                     'full_name': user['full_name'],
@@ -476,7 +489,8 @@ def login():
                     'role':      user['role'],
                 }
             })
-        return jsonify({'status': 'error', 'message': 'Invalid email or password'}), 401
+        return jsonify({'status': 'error',
+            'message': 'Invalid email or password'}), 401
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
@@ -486,36 +500,35 @@ def login():
 @app.route('/api/upload', methods=['POST'])
 def upload_document():
     try:
-        # Get user from token
-        auth  = request.headers.get('Authorization', '')
-        token = auth.replace('Bearer ', '')
+        auth     = request.headers.get('Authorization', '')
+        token    = auth.replace('Bearer ', '')
         payload  = jwt.decode(token, app.secret_key, algorithms=['HS256'])
         user_id  = payload['user_id']
 
         if 'file' not in request.files:
-            return jsonify({'status': 'error', 'message': 'No file uploaded'}), 400
+            return jsonify({'status': 'error',
+                'message': 'No file uploaded'}), 400
 
         file = request.files['file']
         if file.filename == '' or not allowed_file(file.filename):
-            return jsonify({'status': 'error', 'message': 'Invalid file type. Use PDF, DOCX or TXT'}), 400
+            return jsonify({'status': 'error',
+                'message': 'Invalid file type. Use PDF, DOCX or TXT'}), 400
 
-        filename      = secure_filename(file.filename)
-        saved_name    = f"{user_id}_{int(datetime.datetime.now().timestamp())}_{filename}"
-        filepath      = os.path.join(app.config['UPLOAD_FOLDER'], saved_name)
+        filename   = secure_filename(file.filename)
+        saved_name = f"{user_id}_{int(datetime.datetime.now().timestamp())}_{filename}"
+        filepath   = os.path.join(app.config['UPLOAD_FOLDER'], saved_name)
+        
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
         file.save(filepath)
 
-        # Extract text
         text = extract_text(filepath)
         if not text or len(text) < 20:
-            return jsonify({'status': 'error', 'message': 'Could not read document text'}), 400
+            return jsonify({'status': 'error',
+                'message': 'Could not read document text'}), 400
 
-        # Classify
         doc_type, confidence, top3 = classify_document(text)
-
-        # Audit
         clauses, score, passed, total = audit_compliance(text, doc_type)
 
-        # Save to DB
         db  = get_db()
         cur = db.cursor()
         cur.execute('''INSERT INTO documents
@@ -526,7 +539,6 @@ def upload_document():
              score, passed, total, text[:500])
         )
         doc_id = cur.lastrowid
-
         for clause, status in clauses.items():
             cur.execute(
                 'INSERT INTO audit_results (doc_id, clause, status) VALUES (%s,%s,%s)',
@@ -588,21 +600,19 @@ def get_document_detail(doc_id):
         cur = db.cursor(dictionary=True)
         cur.execute('SELECT * FROM documents WHERE doc_id=%s', (doc_id,))
         doc = cur.fetchone()
-        cur.execute('SELECT clause, status FROM audit_results WHERE doc_id=%s', (doc_id,))
+        cur.execute(
+            'SELECT clause, status FROM audit_results WHERE doc_id=%s', (doc_id,))
         clauses = cur.fetchall()
         cur.close(); db.close()
 
         if not doc:
-            return jsonify({'status': 'error', 'message': 'Document not found'}), 404
+            return jsonify({'status': 'error',
+                'message': 'Document not found'}), 404
 
         if isinstance(doc.get('uploaded_at'), datetime.datetime):
             doc['uploaded_at'] = doc['uploaded_at'].strftime('%Y-%m-%d %H:%M')
 
-        return jsonify({
-            'status':   'success',
-            'document': doc,
-            'clauses':  clauses,
-        })
+        return jsonify({'status': 'success', 'document': doc, 'clauses': clauses})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
@@ -619,17 +629,16 @@ def get_stats():
 
         db  = get_db()
         cur = db.cursor(dictionary=True)
-        cur.execute('SELECT COUNT(*) as total FROM documents WHERE user_id=%s', (user_id,))
+        cur.execute(
+            'SELECT COUNT(*) as total FROM documents WHERE user_id=%s', (user_id,))
         total = cur.fetchone()['total']
         cur.execute(
             'SELECT COUNT(*) as compliant FROM documents WHERE user_id=%s AND compliance_score>=80',
-            (user_id,)
-        )
+            (user_id,))
         compliant = cur.fetchone()['compliant']
         cur.execute(
             'SELECT doc_type, COUNT(*) as count FROM documents WHERE user_id=%s GROUP BY doc_type',
-            (user_id,)
-        )
+            (user_id,))
         by_type = cur.fetchall()
         cur.close(); db.close()
 
@@ -642,8 +651,9 @@ def get_stats():
         })
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
 # =============================================================
-# PDF REPORT GENERATION
+# PDF REPORT
 # =============================================================
 @app.route('/api/report/<int:doc_id>', methods=['GET'])
 def generate_report(doc_id):
@@ -651,92 +661,66 @@ def generate_report(doc_id):
         from reportlab.lib.pagesizes import A4
         from reportlab.lib import colors
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+        from reportlab.platypus import (SimpleDocTemplate, Paragraph,
+                                         Spacer, Table, TableStyle, HRFlowable)
         from reportlab.lib.units import cm
         import io
 
-        # Get document from DB
         db  = get_db()
         cur = db.cursor(dictionary=True)
         cur.execute('SELECT * FROM documents WHERE doc_id=%s', (doc_id,))
         doc = cur.fetchone()
-        cur.execute('SELECT clause, status FROM audit_results WHERE doc_id=%s', (doc_id,))
+        cur.execute(
+            'SELECT clause, status FROM audit_results WHERE doc_id=%s', (doc_id,))
         clauses = cur.fetchall()
-        cur.execute('SELECT full_name, email, company FROM users WHERE user_id=%s', (doc['user_id'],))
+        cur.execute(
+            'SELECT full_name, email, company FROM users WHERE user_id=%s',
+            (doc['user_id'],))
         user = cur.fetchone()
         cur.close(); db.close()
 
         if not doc:
-            return jsonify({'status': 'error', 'message': 'Document not found'}), 404
+            return jsonify({'status': 'error', 'message': 'Not found'}), 404
 
-        # Build PDF in memory
         buffer = io.BytesIO()
-        pdf = SimpleDocTemplate(
-            buffer, pagesize=A4,
-            rightMargin=2*cm, leftMargin=2*cm,
-            topMargin=2*cm, bottomMargin=2*cm
-        )
-
-        styles = getSampleStyleSheet()
+        pdf    = SimpleDocTemplate(buffer, pagesize=A4,
+                    rightMargin=2*cm, leftMargin=2*cm,
+                    topMargin=2*cm, bottomMargin=2*cm)
         story  = []
 
-        # ── Header ──────────────────────────────────────────
-        header_style = ParagraphStyle(
-            'Header',
-            fontSize=22, fontName='Helvetica-Bold',
+        header_style = ParagraphStyle('H', fontSize=22,
+            fontName='Helvetica-Bold',
+            textColor=colors.HexColor('#1a3c5e'), spaceAfter=4)
+        sub_style = ParagraphStyle('S', fontSize=10,
+            fontName='Helvetica',
+            textColor=colors.HexColor('#888888'), spaceAfter=2)
+        section_style = ParagraphStyle('Sec', fontSize=13,
+            fontName='Helvetica-Bold',
             textColor=colors.HexColor('#1a3c5e'),
-            spaceAfter=4,
-        )
-        sub_style = ParagraphStyle(
-            'Sub',
-            fontSize=10, fontName='Helvetica',
-            textColor=colors.HexColor('#888888'),
-            spaceAfter=2,
-        )
-        label_style = ParagraphStyle(
-            'Label',
-            fontSize=10, fontName='Helvetica-Bold',
-            textColor=colors.HexColor('#1a3c5e'),
-        )
-        value_style = ParagraphStyle(
-            'Value',
-            fontSize=10, fontName='Helvetica',
-            textColor=colors.HexColor('#333333'),
-        )
-        section_style = ParagraphStyle(
-            'Section',
-            fontSize=13, fontName='Helvetica-Bold',
-            textColor=colors.HexColor('#1a3c5e'),
-            spaceBefore=16, spaceAfter=8,
-        )
+            spaceBefore=16, spaceAfter=8)
 
-        story.append(Paragraph('🏛 AuditSmart', header_style))
-        story.append(Paragraph('AI-Powered Document Classification & Contract Audit System', sub_style))
+        story.append(Paragraph('AuditSmart', header_style))
+        story.append(Paragraph(
+            'AI-Powered Document Classification & Contract Audit System', sub_style))
         story.append(Paragraph('University of Kigali · BBIT 2026 · Rwanda', sub_style))
         story.append(HRFlowable(width="100%", thickness=2,
             color=colors.HexColor('#1a3c5e'), spaceAfter=16))
 
-        # ── Report Title ─────────────────────────────────────
-        title_style = ParagraphStyle(
-            'Title',
-            fontSize=16, fontName='Helvetica-Bold',
-            textColor=colors.white,
-            alignment=1,
-        )
-        title_data = [[Paragraph('DOCUMENT AUDIT REPORT', title_style)]]
-        title_table = Table(title_data, colWidths=[17*cm])
+        title_style = ParagraphStyle('T', fontSize=16,
+            fontName='Helvetica-Bold',
+            textColor=colors.white, alignment=1)
+        title_table = Table(
+            [[Paragraph('DOCUMENT AUDIT REPORT', title_style)]],
+            colWidths=[17*cm])
         title_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#1a3c5e')),
-            ('ROUNDEDCORNERS', [8]),
+            ('BACKGROUND',    (0,0), (-1,-1), colors.HexColor('#1a3c5e')),
             ('TOPPADDING',    (0,0), (-1,-1), 14),
             ('BOTTOMPADDING', (0,0), (-1,-1), 14),
         ]))
         story.append(title_table)
         story.append(Spacer(1, 16))
 
-        # ── Document Info ────────────────────────────────────
-        story.append(Paragraph('📄 Document Information', section_style))
-
+        story.append(Paragraph('Document Information', section_style))
         uploaded_at = doc['uploaded_at']
         if isinstance(uploaded_at, datetime.datetime):
             uploaded_at = uploaded_at.strftime('%Y-%m-%d %H:%M')
@@ -764,32 +748,26 @@ def generate_report(doc_id):
             ('BOTTOMPADDING', (0,0), (-1,-1), 8),
             ('LEFTPADDING',   (0,0), (-1,-1), 10),
             ('GRID',          (0,0), (-1,-1), 0.5, colors.HexColor('#e0e0e0')),
-            ('ROUNDEDCORNERS',[6]),
         ]))
         story.append(info_table)
         story.append(Spacer(1, 16))
 
-        # ── Compliance Score ─────────────────────────────────
-        story.append(Paragraph('📊 Compliance Score', section_style))
-
-        score     = doc['compliance_score']
-        passed    = doc['clauses_passed']
-        total     = doc['clauses_total']
-        clr       = colors.HexColor(
+        story.append(Paragraph('Compliance Score', section_style))
+        score  = doc['compliance_score']
+        passed = doc['clauses_passed']
+        total  = doc['clauses_total']
+        clr    = colors.HexColor(
             '#2e7d32' if score >= 80 else
-            '#e65100' if score >= 50 else '#c62828'
-        )
+            '#e65100' if score >= 50 else '#c62828')
         status_txt = (
-            'FULLY COMPLIANT' if score >= 80 else
+            'FULLY COMPLIANT'     if score >= 80 else
             'PARTIALLY COMPLIANT' if score >= 50 else
-            'NON COMPLIANT'
-        )
+            'NON COMPLIANT')
 
-        score_data = [
-            [f'{score}%', f'{passed}/{total}', status_txt],
-            ['Compliance Score', 'Clauses Passed', 'Overall Status'],
-        ]
-        score_table = Table(score_data, colWidths=[5.6*cm, 5.6*cm, 5.6*cm])
+        score_table = Table(
+            [[f'{score}%', f'{passed}/{total}', status_txt],
+             ['Compliance Score', 'Clauses Passed', 'Overall Status']],
+            colWidths=[5.6*cm, 5.6*cm, 5.6*cm])
         score_table.setStyle(TableStyle([
             ('FONTNAME',      (0,0), (-1,0), 'Helvetica-Bold'),
             ('FONTSIZE',      (0,0), (-1,0), 22),
@@ -806,25 +784,23 @@ def generate_report(doc_id):
         story.append(score_table)
         story.append(Spacer(1, 16))
 
-        # ── Clause Audit ─────────────────────────────────────
-        story.append(Paragraph('✅ Clause Audit Results', section_style))
-
+        story.append(Paragraph('Clause Audit Results', section_style))
         clause_data = [['Clause', 'Status', 'Result']]
         for c in clauses:
-            ok     = bool(c['status'])
-            status = '✓ FOUND'    if ok else '✗ MISSING'
-            result = 'Compliant'  if ok else 'Needs Attention'
-            clause_data.append([c['clause'], status, result])
+            ok = bool(c['status'])
+            clause_data.append([
+                c['clause'],
+                'FOUND'   if ok else 'MISSING',
+                'Compliant' if ok else 'Needs Attention'
+            ])
 
         clause_table = Table(clause_data, colWidths=[8*cm, 4*cm, 5*cm])
         clause_table.setStyle(TableStyle([
-            # Header row
             ('BACKGROUND',    (0,0), (-1,0), colors.HexColor('#1a3c5e')),
             ('TEXTCOLOR',     (0,0), (-1,0), colors.white),
             ('FONTNAME',      (0,0), (-1,0), 'Helvetica-Bold'),
             ('FONTSIZE',      (0,0), (-1,0), 10),
             ('ALIGN',         (0,0), (-1,0), 'CENTER'),
-            # Data rows
             ('FONTNAME',      (0,1), (-1,-1), 'Helvetica'),
             ('FONTSIZE',      (0,1), (-1,-1), 10),
             ('ROWBACKGROUNDS',(0,1), (-1,-1),
@@ -834,8 +810,6 @@ def generate_report(doc_id):
             ('LEFTPADDING',   (0,0), (-1,-1), 10),
             ('GRID',          (0,0), (-1,-1), 0.5, colors.HexColor('#e0e0e0')),
         ]))
-
-        # Color status cells
         for i, c in enumerate(clauses, start=1):
             ok  = bool(c['status'])
             clr = colors.HexColor('#2e7d32' if ok else '#c62828')
@@ -843,91 +817,59 @@ def generate_report(doc_id):
                 ('TEXTCOLOR', (1,i), (2,i), clr),
                 ('FONTNAME',  (1,i), (2,i), 'Helvetica-Bold'),
             ]))
-
         story.append(clause_table)
         story.append(Spacer(1, 16))
 
-        # ── Text Preview ─────────────────────────────────────
         if doc.get('text_preview'):
-            story.append(Paragraph('📝 Document Text Preview', section_style))
-            preview_style = ParagraphStyle(
-                'Preview',
-                fontSize=9, fontName='Helvetica',
+            story.append(Paragraph('Document Text Preview', section_style))
+            preview_style = ParagraphStyle('P', fontSize=9,
+                fontName='Helvetica',
                 textColor=colors.HexColor('#555555'),
                 leading=14, backColor=colors.HexColor('#f8fbff'),
-                borderPadding=10,
-            )
+                borderPadding=10)
             preview_text = doc['text_preview'][:400].replace('\n', '<br/>')
             story.append(Paragraph(preview_text, preview_style))
             story.append(Spacer(1, 16))
 
-        # ── Recommendations ──────────────────────────────────
-        story.append(Paragraph('💡 Recommendations', section_style))
-
+        story.append(Paragraph('Recommendations', section_style))
         missing = [c['clause'] for c in clauses if not bool(c['status'])]
-        if not missing:
-            rec_text = (
-                'This document is fully compliant. '
-                'All required clauses have been found and verified. '
-                'No action is required at this time.'
-            )
-        else:
-            rec_text = (
-                f'This document is missing {len(missing)} required clause(s): '
-                f'{", ".join(missing)}. '
-                'It is recommended to review and update the document to include '
-                'these clauses before signing or submitting for approval.'
-            )
-
-        rec_style = ParagraphStyle(
-            'Rec',
-            fontSize=10, fontName='Helvetica',
-            textColor=colors.HexColor('#333333'),
-            leading=16,
-            backColor=colors.HexColor(
-                '#e8f5e9' if not missing else '#fff3e0'),
-            borderPadding=12,
+        rec_text = (
+            'This document is fully compliant. All required clauses have been '
+            'found and verified. No action is required at this time.'
+            if not missing else
+            f'This document is missing {len(missing)} required clause(s): '
+            f'{", ".join(missing)}. It is recommended to review and update '
+            'the document before signing or submitting for approval.'
         )
+        rec_style = ParagraphStyle('R', fontSize=10, fontName='Helvetica',
+            textColor=colors.HexColor('#333333'), leading=16,
+            backColor=colors.HexColor('#e8f5e9' if not missing else '#fff3e0'),
+            borderPadding=12)
         story.append(Paragraph(rec_text, rec_style))
         story.append(Spacer(1, 24))
 
-        # ── Footer ───────────────────────────────────────────
         story.append(HRFlowable(width="100%", thickness=1,
             color=colors.HexColor('#e0e0e0'), spaceAfter=10))
-        footer_style = ParagraphStyle(
-            'Footer',
-            fontSize=8, fontName='Helvetica',
-            textColor=colors.HexColor('#aaaaaa'),
-            alignment=1,
-        )
+        footer_style = ParagraphStyle('F', fontSize=8, fontName='Helvetica',
+            textColor=colors.HexColor('#aaaaaa'), alignment=1)
         story.append(Paragraph(
             'AuditSmart v1.0  ·  Ruhorimbere Fred (2305001581)  ·  '
             'Supervisor: Dr. Eustach Uwimana  ·  University of Kigali  ·  BBIT 2026',
-            footer_style
-        ))
+            footer_style))
         story.append(Paragraph(
             f'Generated on {datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}  ·  '
             'AI-Powered Document Audit System  ·  Rwanda',
-            footer_style
-        ))
+            footer_style))
 
-        # Build PDF
         pdf.build(story)
         buffer.seek(0)
-
-        from flask import send_file
-        return send_file(
-            buffer,
-            mimetype='application/pdf',
+        return send_file(buffer, mimetype='application/pdf',
             as_attachment=True,
-            download_name=f'AuditSmart_Report_{doc["doc_type"].replace(" ","_")}_{doc_id}.pdf'
-        )
+            download_name=f'AuditSmart_Report_{doc["doc_type"].replace(" ","_")}_{doc_id}.pdf')
 
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
-# =============================================================
-# STATUS
-# =============================================================
+
 # =============================================================
 # ADMIN ROUTES
 # =============================================================
@@ -937,16 +879,13 @@ def admin_get_users():
         auth    = request.headers.get('Authorization', '')
         token   = auth.replace('Bearer ', '')
         payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
-
         db  = get_db()
         cur = db.cursor(dictionary=True)
-
-        # Check if admin
         cur.execute('SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
         user = cur.fetchone()
         if not user or user['role'] != 'admin':
-            return jsonify({'status': 'error', 'message': 'Admin access required'}), 403
-
+            return jsonify({'status': 'error',
+                'message': 'Admin access required'}), 403
         cur.execute('''SELECT u.user_id, u.full_name, u.email, u.company, u.role,
                        u.created_at, COUNT(d.doc_id) as total_docs
                        FROM users u
@@ -955,11 +894,9 @@ def admin_get_users():
                        ORDER BY u.created_at DESC''')
         users = cur.fetchall()
         cur.close(); db.close()
-
         for u in users:
             if isinstance(u.get('created_at'), datetime.datetime):
                 u['created_at'] = u['created_at'].strftime('%Y-%m-%d %H:%M')
-
         return jsonify({'status': 'success', 'users': users})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -970,30 +907,24 @@ def admin_get_documents():
         auth    = request.headers.get('Authorization', '')
         token   = auth.replace('Bearer ', '')
         payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
-
         db  = get_db()
         cur = db.cursor(dictionary=True)
-
-        # Check if admin
         cur.execute('SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
         user = cur.fetchone()
         if not user or user['role'] != 'admin':
-            return jsonify({'status': 'error', 'message': 'Admin access required'}), 403
-
+            return jsonify({'status': 'error',
+                'message': 'Admin access required'}), 403
         cur.execute('''SELECT d.doc_id, d.original_name, d.doc_type,
                        d.confidence, d.compliance_score, d.clauses_passed,
-                       d.clauses_total, d.uploaded_at,
-                       u.full_name, u.email
+                       d.clauses_total, d.uploaded_at, u.full_name, u.email
                        FROM documents d
                        JOIN users u ON d.user_id = u.user_id
                        ORDER BY d.uploaded_at DESC''')
         docs = cur.fetchall()
         cur.close(); db.close()
-
         for d in docs:
             if isinstance(d.get('uploaded_at'), datetime.datetime):
                 d['uploaded_at'] = d['uploaded_at'].strftime('%Y-%m-%d %H:%M')
-
         return jsonify({'status': 'success', 'documents': docs})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -1004,50 +935,42 @@ def admin_stats():
         auth    = request.headers.get('Authorization', '')
         token   = auth.replace('Bearer ', '')
         payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
-
         db  = get_db()
         cur = db.cursor(dictionary=True)
-
         cur.execute('SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
         user = cur.fetchone()
         if not user or user['role'] != 'admin':
-            return jsonify({'status': 'error', 'message': 'Admin access required'}), 403
-
+            return jsonify({'status': 'error',
+                'message': 'Admin access required'}), 403
         cur.execute('SELECT COUNT(*) as total FROM users')
         total_users = cur.fetchone()['total']
-
         cur.execute('SELECT COUNT(*) as total FROM documents')
         total_docs = cur.fetchone()['total']
-
-        cur.execute('SELECT COUNT(*) as total FROM documents WHERE compliance_score >= 80')
+        cur.execute(
+            'SELECT COUNT(*) as total FROM documents WHERE compliance_score >= 80')
         compliant = cur.fetchone()['total']
-
-        cur.execute('SELECT doc_type, COUNT(*) as count FROM documents GROUP BY doc_type')
+        cur.execute(
+            'SELECT doc_type, COUNT(*) as count FROM documents GROUP BY doc_type')
         by_type = cur.fetchall()
-
         cur.close(); db.close()
-
         return jsonify({
-            'status':       'success',
-            'total_users':  total_users,
-            'total_docs':   total_docs,
-            'compliant':    compliant,
-            'issues':       total_docs - compliant,
-            'by_type':      by_type,
+            'status':      'success',
+            'total_users': total_users,
+            'total_docs':  total_docs,
+            'compliant':   compliant,
+            'issues':      total_docs - compliant,
+            'by_type':     by_type,
         })
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-@app.route('/admin')
-def admin_page():
-    return render_template('admin.html')
 # =============================================================
-# MODEL EVALUATION — Precision, Recall, F1-Score
+# MODEL EVALUATION
 # =============================================================
 @app.route('/api/evaluation', methods=['GET'])
 def get_evaluation():
     try:
-        from sklearn.metrics import precision_score, recall_score, f1_score, classification_report
+        from sklearn.metrics import precision_score, recall_score, f1_score
         from sklearn.model_selection import cross_val_predict
 
         texts, labels = [], []
@@ -1056,53 +979,49 @@ def get_evaluation():
                 texts.append(text)
                 labels.append(label)
 
-        X = _vectorizer.transform(texts)
-
-        # Cross validation predictions
-        from sklearn.svm import LinearSVC
-        from sklearn.calibration import CalibratedClassifierCV
-        svc  = LinearSVC(C=1.0, max_iter=5000)
-        ccv  = CalibratedClassifierCV(svc, cv=3)
-        from sklearn.model_selection import cross_val_predict
+        X     = _vectorizer.transform(texts)
         preds = cross_val_predict(
             CalibratedClassifierCV(LinearSVC(C=1.0, max_iter=5000), cv=3),
             X, labels, cv=3
         )
 
-        # Overall metrics
-        precision = round(precision_score(labels, preds, average='weighted') * 100, 2)
-        recall    = round(recall_score(labels, preds, average='weighted') * 100, 2)
-        f1        = round(f1_score(labels, preds, average='weighted') * 100, 2)
+        precision = round(
+            precision_score(labels, preds, average='weighted') * 100, 2)
+        recall    = round(
+            recall_score(labels, preds, average='weighted') * 100, 2)
+        f1        = round(
+            f1_score(labels, preds, average='weighted') * 100, 2)
 
-        # Per class metrics
-        classes   = sorted(set(labels))
-        p_each    = precision_score(labels, preds, average=None, labels=classes)
-        r_each    = recall_score(labels, preds, average=None, labels=classes)
-        f_each    = f1_score(labels, preds, average=None, labels=classes)
+        classes = sorted(set(labels))
+        p_each  = precision_score(labels, preds, average=None, labels=classes)
+        r_each  = recall_score(labels, preds, average=None, labels=classes)
+        f_each  = f1_score(labels, preds, average=None, labels=classes)
 
-        per_class = []
-        for i, cls in enumerate(classes):
-            per_class.append({
+        per_class = [
+            {
                 'class':     cls,
                 'precision': round(float(p_each[i]) * 100, 2),
                 'recall':    round(float(r_each[i]) * 100, 2),
                 'f1':        round(float(f_each[i]) * 100, 2),
-            })
+            }
+            for i, cls in enumerate(classes)
+        ]
 
         return jsonify({
-            'status':    'success',
+            'status':  'success',
             'overall': {
                 'precision': precision,
                 'recall':    recall,
                 'f1_score':  f1,
                 'accuracy':  round((precision + recall + f1) / 3, 2),
             },
-            'per_class': per_class,
-            'total_samples': len(texts),
-            'total_classes': len(classes),
+            'per_class':      per_class,
+            'total_samples':  len(texts),
+            'total_classes':  len(classes),
         })
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
 # =============================================================
 # USER FEEDBACK
 # =============================================================
@@ -1113,33 +1032,21 @@ def submit_feedback():
         token   = auth.replace('Bearer ', '')
         payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
         user_id = payload['user_id']
-
-        d        = request.get_json() or {}
-        rating   = d.get('rating', 0)
-        category = d.get('category', '')
-        message  = d.get('message', '').strip()
-
+        d       = request.get_json() or {}
+        rating  = d.get('rating', 0)
+        category= d.get('category', '')
+        message = d.get('message', '').strip()
         if not message or not rating:
             return jsonify({'status': 'error',
                 'message': 'Rating and message required'}), 400
-
         db  = get_db()
         cur = db.cursor()
-        cur.execute('''CREATE TABLE IF NOT EXISTS feedback (
-            feedback_id  INT AUTO_INCREMENT PRIMARY KEY,
-            user_id      INT NOT NULL,
-            rating       INT NOT NULL,
-            category     VARCHAR(50),
-            message      TEXT,
-            created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
         cur.execute(
             'INSERT INTO feedback (user_id, rating, category, message) VALUES (%s,%s,%s,%s)',
             (user_id, rating, category, message)
         )
         db.commit()
         cur.close(); db.close()
-
         return jsonify({'status': 'success',
             'message': 'Feedback submitted successfully!'})
     except Exception as e:
@@ -1151,34 +1058,25 @@ def get_feedback():
         auth    = request.headers.get('Authorization', '')
         token   = auth.replace('Bearer ', '')
         payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
-
         db  = get_db()
         cur = db.cursor(dictionary=True)
-        cur.execute('SELECT role FROM users WHERE user_id=%s',
-            (payload['user_id'],))
+        cur.execute('SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
         user = cur.fetchone()
-
         if not user or user['role'] != 'admin':
             return jsonify({'status': 'error',
                 'message': 'Admin access required'}), 403
-
         cur.execute('''SELECT f.feedback_id, f.rating, f.category,
-                       f.message, f.created_at,
-                       u.full_name, u.email
+                       f.message, f.created_at, u.full_name, u.email
                        FROM feedback f
                        JOIN users u ON f.user_id = u.user_id
                        ORDER BY f.created_at DESC''')
         feedbacks = cur.fetchall()
         cur.close(); db.close()
-
         for f in feedbacks:
             if isinstance(f.get('created_at'), datetime.datetime):
                 f['created_at'] = f['created_at'].strftime('%Y-%m-%d %H:%M')
-
-        # Average rating
         avg = round(sum(f['rating'] for f in feedbacks) / len(feedbacks), 1) \
             if feedbacks else 0
-
         return jsonify({
             'status':     'success',
             'feedbacks':  feedbacks,
@@ -1187,13 +1085,17 @@ def get_feedback():
         })
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+# =============================================================
+# STATUS & PAGES
+# =============================================================
 @app.route('/api/status')
 def status():
     return jsonify({
-        'status':  'running',
-        'system':  'AuditSmart',
-        'version': '1.0',
-        'author':  'Ruhorimbere Fred (2305001581)',
+        'status':    'running',
+        'system':    'AuditSmart',
+        'version':   '1.0',
+        'author':    'Ruhorimbere Fred (2305001581)',
         'doc_types': DOCUMENT_TYPES,
     })
 
@@ -1204,10 +1106,16 @@ def index():
 @app.route('/dashboard')
 def dashboard():
     return render_template('dashboard.html')
+
+@app.route('/admin')
+def admin_page():
+    return render_template('admin.html')
+
 # =============================================================
-# MAIN
+# STARTUP
 # =============================================================
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+train_model()
+
 if __name__ == '__main__':
-    train_model()
-    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     app.run(debug=True, host='0.0.0.0', port=5000)
