@@ -7,35 +7,27 @@
 # =============================================================
 
 import os
-import re
+import io
 import jwt
-import json
 import hashlib
 import datetime
 import numpy as np
 import pandas as pd
 
-from flask import (
-    Flask, request, jsonify,
-    render_template, redirect, url_for, session, send_file
-)
+from flask import Flask, request, jsonify, render_template, send_file
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
+from urllib.parse import urlparse
 
-# Document reading
 import PyPDF2
 from docx import Document as DocxDocument
 
-# ML
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.svm import LinearSVC
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import precision_score, recall_score, f1_score
+from sklearn.model_selection import cross_val_predict
 
-# Database
 import mysql.connector
 
 # =============================================================
@@ -48,32 +40,27 @@ CORS(app)
 UPLOAD_FOLDER = '/tmp/uploads'
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
-# Create uploads folder on startup
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # =============================================================
 # DATABASE
 # =============================================================
-from urllib.parse import urlparse
-
 _mysql_url = os.environ.get('MYSQL_URL', '')
 if _mysql_url:
-    _parsed = urlparse(_mysql_url)
+    _p = urlparse(_mysql_url)
     DB_CONFIG = dict(
-        host=_parsed.hostname,
-        port=_parsed.port or 3306,
-        user=_parsed.username,
-        password=_parsed.password,
-        database=_parsed.path.lstrip('/')
+        host=_p.hostname,
+        port=_p.port or 3306,
+        user=_p.username,
+        password=_p.password,
+        database=_p.path.lstrip('/')
     )
 else:
     DB_CONFIG = dict(
-        host='localhost',
-        user='root',
-        password='',
-        database='auditsmart_db'
+        host='localhost', user='root',
+        password='', database='auditsmart_db'
     )
 
 def get_db():
@@ -83,13 +70,9 @@ def get_db():
 # DOCUMENT TYPES
 # =============================================================
 DOCUMENT_TYPES = [
-    'NDA',
-    'Employment Contract',
-    'Invoice',
-    'Service Agreement',
-    'Purchase Order',
-    'Lease Agreement',
-    'Partnership Agreement',
+    'NDA', 'Employment Contract', 'Invoice',
+    'Service Agreement', 'Purchase Order',
+    'Lease Agreement', 'Partnership Agreement',
 ]
 
 # =============================================================
@@ -97,59 +80,59 @@ DOCUMENT_TYPES = [
 # =============================================================
 COMPLIANCE_RULES = {
     'NDA': {
-        'Parties Named':        ['between', 'party', 'undersigned'],
-        'Confidentiality':      ['confidential', 'secret', 'disclose'],
-        'Duration':             ['year', 'month', 'period', 'term', 'duration'],
-        'Governing Law':        ['governed', 'jurisdiction', 'law of'],
-        'Signature Required':   ['signed', 'signature', 'executed'],
+        'Parties Named':      ['between', 'party', 'undersigned'],
+        'Confidentiality':    ['confidential', 'secret', 'disclose'],
+        'Duration':           ['year', 'month', 'period', 'term', 'duration'],
+        'Governing Law':      ['governed', 'jurisdiction', 'law of'],
+        'Signature Required': ['signed', 'signature', 'executed'],
     },
     'Employment Contract': {
-        'Parties Named':        ['employer', 'employee', 'between'],
-        'Job Title':            ['position', 'title', 'role', 'job'],
-        'Salary Mentioned':     ['salary', 'wage', 'compensation', 'pay'],
-        'Start Date':           ['start date', 'commencement', 'effective date'],
-        'Termination Clause':   ['terminate', 'termination', 'notice period'],
-        'Governing Law':        ['governed', 'jurisdiction', 'law'],
+        'Parties Named':      ['employer', 'employee', 'between'],
+        'Job Title':          ['position', 'title', 'role', 'job'],
+        'Salary Mentioned':   ['salary', 'wage', 'compensation', 'pay'],
+        'Start Date':         ['start date', 'commencement', 'effective date'],
+        'Termination Clause': ['terminate', 'termination', 'notice period'],
+        'Governing Law':      ['governed', 'jurisdiction', 'law'],
     },
     'Invoice': {
-        'Invoice Number':       ['invoice no', 'invoice number', 'inv#'],
-        'Date':                 ['date', 'dated'],
-        'Amount':               ['total', 'amount', 'rwf', 'usd', 'price'],
-        'Seller Details':       ['from', 'seller', 'vendor', 'company'],
-        'Buyer Details':        ['to', 'buyer', 'client', 'customer'],
-        'Payment Terms':        ['payment', 'due', 'days', 'bank'],
+        'Invoice Number': ['invoice no', 'invoice number', 'inv#'],
+        'Date':           ['date', 'dated'],
+        'Amount':         ['total', 'amount', 'rwf', 'usd', 'price'],
+        'Seller Details': ['from', 'seller', 'vendor', 'company'],
+        'Buyer Details':  ['to', 'buyer', 'client', 'customer'],
+        'Payment Terms':  ['payment', 'due', 'days', 'bank'],
     },
     'Service Agreement': {
-        'Parties Named':        ['client', 'service provider', 'between'],
-        'Scope of Work':        ['scope', 'services', 'deliverable'],
-        'Payment Terms':        ['payment', 'fee', 'amount', 'rwf'],
-        'Duration':             ['term', 'period', 'duration', 'month'],
-        'Termination Clause':   ['terminate', 'termination', 'cancel'],
-        'Governing Law':        ['governed', 'jurisdiction', 'law'],
+        'Parties Named':      ['client', 'service provider', 'between'],
+        'Scope of Work':      ['scope', 'services', 'deliverable'],
+        'Payment Terms':      ['payment', 'fee', 'amount', 'rwf'],
+        'Duration':           ['term', 'period', 'duration', 'month'],
+        'Termination Clause': ['terminate', 'termination', 'cancel'],
+        'Governing Law':      ['governed', 'jurisdiction', 'law'],
     },
     'Purchase Order': {
-        'PO Number':            ['po number', 'purchase order no', 'order no'],
-        'Vendor Details':       ['vendor', 'supplier', 'from'],
-        'Item Description':     ['item', 'description', 'product', 'goods'],
-        'Quantity':             ['quantity', 'qty', 'units'],
-        'Price':                ['price', 'amount', 'total', 'rwf'],
-        'Delivery Date':        ['delivery', 'deliver by', 'ship date'],
+        'PO Number':       ['po number', 'purchase order no', 'order no'],
+        'Vendor Details':  ['vendor', 'supplier', 'from'],
+        'Item Description':['item', 'description', 'product', 'goods'],
+        'Quantity':        ['quantity', 'qty', 'units'],
+        'Price':           ['price', 'amount', 'total', 'rwf'],
+        'Delivery Date':   ['delivery', 'deliver by', 'ship date'],
     },
     'Lease Agreement': {
-        'Parties Named':        ['landlord', 'tenant', 'lessor', 'lessee'],
-        'Property Address':     ['property', 'premises', 'address', 'located'],
-        'Rent Amount':          ['rent', 'monthly', 'amount', 'rwf'],
-        'Lease Duration':       ['term', 'period', 'month', 'year'],
-        'Deposit':              ['deposit', 'security', 'advance'],
-        'Governing Law':        ['governed', 'jurisdiction', 'law'],
+        'Parties Named':    ['landlord', 'tenant', 'lessor', 'lessee'],
+        'Property Address': ['property', 'premises', 'address', 'located'],
+        'Rent Amount':      ['rent', 'monthly', 'amount', 'rwf'],
+        'Lease Duration':   ['term', 'period', 'month', 'year'],
+        'Deposit':          ['deposit', 'security', 'advance'],
+        'Governing Law':    ['governed', 'jurisdiction', 'law'],
     },
     'Partnership Agreement': {
-        'Partners Named':       ['partner', 'parties', 'between'],
-        'Business Purpose':     ['purpose', 'business', 'objective'],
-        'Profit Sharing':       ['profit', 'share', 'distribution', 'percent'],
-        'Duration':             ['term', 'period', 'duration'],
-        'Termination Clause':   ['terminate', 'dissolution', 'dissolved', 'wind up'],
-        'Governing Law':        ['governed', 'jurisdiction', 'law'],
+        'Partners Named':     ['partner', 'parties', 'between'],
+        'Business Purpose':   ['purpose', 'business', 'objective'],
+        'Profit Sharing':     ['profit', 'share', 'distribution', 'percent'],
+        'Duration':           ['term', 'period', 'duration'],
+        'Termination Clause': ['terminate', 'dissolution', 'dissolved', 'wind up'],
+        'Governing Law':      ['governed', 'jurisdiction', 'law'],
     },
 }
 
@@ -308,7 +291,7 @@ def train_model():
     svc = LinearSVC(C=1.0, max_iter=5000)
     _classifier = CalibratedClassifierCV(svc, cv=3)
     _classifier.fit(X, labels)
-    print('✅ AuditSmart ML model trained successfully!')
+    print('AuditSmart ML model trained successfully!')
 
 # =============================================================
 # HELPERS
@@ -318,7 +301,7 @@ def allowed_file(filename):
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def extract_text(filepath):
-    ext = filepath.rsplit('.', 1)[1].lower()
+    ext  = filepath.rsplit('.', 1)[1].lower()
     text = ''
     try:
         if ext == 'pdf':
@@ -340,7 +323,7 @@ def extract_text(filepath):
 def classify_document(text):
     if _classifier is None or _vectorizer is None:
         train_model()
-    X = _vectorizer.transform([text])
+    X          = _vectorizer.transform([text])
     predicted  = _classifier.predict(X)[0]
     proba      = _classifier.predict_proba(X)[0]
     classes    = _classifier.classes_
@@ -419,7 +402,8 @@ def init_db():
             created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
         db.commit()
-        cur.close(); db.close()
+        cur.close()
+        db.close()
         return jsonify({'status': 'success', 'message': 'Database initialised!'})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -436,7 +420,8 @@ def register():
         pwd     = d.get('password', '')
         company = d.get('company', '').strip()
         if not name or not email or not pwd:
-            return jsonify({'status': 'error', 'message': 'All fields required'}), 400
+            return jsonify({'status': 'error',
+                            'message': 'All fields required'}), 400
         db  = get_db()
         cur = db.cursor()
         cur.execute(
@@ -445,19 +430,26 @@ def register():
         )
         db.commit()
         user_id = cur.lastrowid
-        cur.close(); db.close()
+        cur.close()
+        db.close()
         token = generate_token(user_id, email)
         return jsonify({
             'status':  'success',
             'message': 'Account created!',
             'token':   token,
-            'user':    {'user_id': user_id, 'full_name': name,
-                        'email': email, 'company': company}
+            'user':    {
+                'user_id':   user_id,
+                'full_name': name,
+                'email':     email,
+                'company':   company,
+            }
         })
     except mysql.connector.IntegrityError:
-        return jsonify({'status': 'error', 'message': 'Email already registered'}), 409
+        return jsonify({'status': 'error',
+                        'message': 'Email already registered'}), 409
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
 
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -467,7 +459,7 @@ def login():
         pwd   = d.get('password', '')
         if not email or not pwd:
             return jsonify({'status': 'error',
-                'message': 'Email and password required'}), 400
+                            'message': 'Email and password required'}), 400
         db  = get_db()
         cur = db.cursor(dictionary=True)
         cur.execute(
@@ -475,7 +467,8 @@ def login():
             (email, hash_password(pwd))
         )
         user = cur.fetchone()
-        cur.close(); db.close()
+        cur.close()
+        db.close()
         if user:
             token = generate_token(user['user_id'], user['email'])
             return jsonify({
@@ -490,51 +483,51 @@ def login():
                 }
             })
         return jsonify({'status': 'error',
-            'message': 'Invalid email or password'}), 401
+                        'message': 'Invalid email or password'}), 401
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 # =============================================================
-# DOCUMENT UPLOAD & CLASSIFY
+# DOCUMENT UPLOAD
 # =============================================================
 @app.route('/api/upload', methods=['POST'])
 def upload_document():
     try:
-        auth     = request.headers.get('Authorization', '')
-        token    = auth.replace('Bearer ', '')
-        payload  = jwt.decode(token, app.secret_key, algorithms=['HS256'])
-        user_id  = payload['user_id']
+        auth    = request.headers.get('Authorization', '')
+        token   = auth.replace('Bearer ', '')
+        payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
+        user_id = payload['user_id']
 
         if 'file' not in request.files:
             return jsonify({'status': 'error',
-                'message': 'No file uploaded'}), 400
+                            'message': 'No file uploaded'}), 400
 
         file = request.files['file']
         if file.filename == '' or not allowed_file(file.filename):
             return jsonify({'status': 'error',
-                'message': 'Invalid file type. Use PDF, DOCX or TXT'}), 400
+                            'message': 'Invalid file type. Use PDF, DOCX or TXT'}), 400
 
         filename   = secure_filename(file.filename)
         saved_name = f"{user_id}_{int(datetime.datetime.now().timestamp())}_{filename}"
         filepath   = os.path.join(app.config['UPLOAD_FOLDER'], saved_name)
-        
         os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
         file.save(filepath)
 
         text = extract_text(filepath)
         if not text or len(text) < 20:
             return jsonify({'status': 'error',
-                'message': 'Could not read document text'}), 400
+                            'message': 'Could not read document text'}), 400
 
-        doc_type, confidence, top3 = classify_document(text)
+        doc_type, confidence, top3    = classify_document(text)
         clauses, score, passed, total = audit_compliance(text, doc_type)
 
         db  = get_db()
         cur = db.cursor()
-        cur.execute('''INSERT INTO documents
-            (user_id, filename, original_name, doc_type, confidence,
-             compliance_score, clauses_passed, clauses_total, text_preview)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+        cur.execute(
+            '''INSERT INTO documents
+               (user_id, filename, original_name, doc_type, confidence,
+                compliance_score, clauses_passed, clauses_total, text_preview)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
             (user_id, saved_name, filename, doc_type, confidence,
              score, passed, total, text[:500])
         )
@@ -545,7 +538,8 @@ def upload_document():
                 (doc_id, clause, status)
             )
         db.commit()
-        cur.close(); db.close()
+        cur.close()
+        db.close()
 
         return jsonify({
             'status':           'success',
@@ -557,7 +551,7 @@ def upload_document():
             'clauses_passed':   passed,
             'clauses_total':    total,
             'clauses':          clauses,
-            'top3':             [(t, round(float(p)*100,1)) for t,p in top3],
+            'top3':             [(t, round(float(p) * 100, 1)) for t, p in top3],
             'text_preview':     text[:300],
         })
     except jwt.ExpiredSignatureError:
@@ -578,12 +572,16 @@ def get_documents():
 
         db  = get_db()
         cur = db.cursor(dictionary=True)
-        cur.execute('''SELECT doc_id, original_name, doc_type, confidence,
-                       compliance_score, clauses_passed, clauses_total, uploaded_at
-                       FROM documents WHERE user_id=%s
-                       ORDER BY uploaded_at DESC''', (user_id,))
+        cur.execute(
+            '''SELECT doc_id, original_name, doc_type, confidence,
+                      compliance_score, clauses_passed, clauses_total, uploaded_at
+               FROM documents WHERE user_id=%s
+               ORDER BY uploaded_at DESC''',
+            (user_id,)
+        )
         docs = cur.fetchall()
-        cur.close(); db.close()
+        cur.close()
+        db.close()
 
         for d in docs:
             if isinstance(d.get('uploaded_at'), datetime.datetime):
@@ -592,6 +590,7 @@ def get_documents():
         return jsonify({'status': 'success', 'documents': docs})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
 
 @app.route('/api/documents/<int:doc_id>', methods=['GET'])
 def get_document_detail(doc_id):
@@ -603,11 +602,12 @@ def get_document_detail(doc_id):
         cur.execute(
             'SELECT clause, status FROM audit_results WHERE doc_id=%s', (doc_id,))
         clauses = cur.fetchall()
-        cur.close(); db.close()
+        cur.close()
+        db.close()
 
         if not doc:
             return jsonify({'status': 'error',
-                'message': 'Document not found'}), 404
+                            'message': 'Document not found'}), 404
 
         if isinstance(doc.get('uploaded_at'), datetime.datetime):
             doc['uploaded_at'] = doc['uploaded_at'].strftime('%Y-%m-%d %H:%M')
@@ -640,7 +640,8 @@ def get_stats():
             'SELECT doc_type, COUNT(*) as count FROM documents WHERE user_id=%s GROUP BY doc_type',
             (user_id,))
         by_type = cur.fetchall()
-        cur.close(); db.close()
+        cur.close()
+        db.close()
 
         return jsonify({
             'status':         'success',
@@ -660,11 +661,12 @@ def generate_report(doc_id):
     try:
         from reportlab.lib.pagesizes import A4
         from reportlab.lib import colors
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.platypus import (SimpleDocTemplate, Paragraph,
-                                         Spacer, Table, TableStyle, HRFlowable)
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer,
+            Table, TableStyle, HRFlowable
+        )
         from reportlab.lib.units import cm
-        import io
 
         db  = get_db()
         cur = db.cursor(dictionary=True)
@@ -677,55 +679,63 @@ def generate_report(doc_id):
             'SELECT full_name, email, company FROM users WHERE user_id=%s',
             (doc['user_id'],))
         user = cur.fetchone()
-        cur.close(); db.close()
+        cur.close()
+        db.close()
 
         if not doc:
             return jsonify({'status': 'error', 'message': 'Not found'}), 404
 
-        buffer = io.BytesIO()
-        pdf    = SimpleDocTemplate(buffer, pagesize=A4,
-                    rightMargin=2*cm, leftMargin=2*cm,
-                    topMargin=2*cm, bottomMargin=2*cm)
-        story  = []
+        buf = io.BytesIO()
+        pdf = SimpleDocTemplate(
+            buf, pagesize=A4,
+            rightMargin=2*cm, leftMargin=2*cm,
+            topMargin=2*cm, bottomMargin=2*cm
+        )
+        story = []
 
-        header_style = ParagraphStyle('H', fontSize=22,
-            fontName='Helvetica-Bold',
-            textColor=colors.HexColor('#1a3c5e'), spaceAfter=4)
-        sub_style = ParagraphStyle('S', fontSize=10,
-            fontName='Helvetica',
-            textColor=colors.HexColor('#888888'), spaceAfter=2)
-        section_style = ParagraphStyle('Sec', fontSize=13,
-            fontName='Helvetica-Bold',
-            textColor=colors.HexColor('#1a3c5e'),
-            spaceBefore=16, spaceAfter=8)
+        # Styles
+        h1 = ParagraphStyle('h1', fontSize=22, fontName='Helvetica-Bold',
+                             textColor=colors.HexColor('#1a3c5e'), spaceAfter=6)
+        sub = ParagraphStyle('sub', fontSize=10, fontName='Helvetica',
+                              textColor=colors.HexColor('#888888'), spaceAfter=4)
+        sec = ParagraphStyle('sec', fontSize=13, fontName='Helvetica-Bold',
+                              textColor=colors.HexColor('#1a3c5e'),
+                              spaceBefore=14, spaceAfter=8)
+        body = ParagraphStyle('body', fontSize=10, fontName='Helvetica',
+                               textColor=colors.HexColor('#333333'), leading=16)
+        foot = ParagraphStyle('foot', fontSize=8, fontName='Helvetica',
+                               textColor=colors.HexColor('#aaaaaa'), alignment=1)
 
-        story.append(Paragraph('AuditSmart', header_style))
+        # Header
+        story.append(Paragraph('AuditSmart', h1))
         story.append(Paragraph(
-            'AI-Powered Document Classification & Contract Audit System', sub_style))
-        story.append(Paragraph('University of Kigali · BBIT 2026 · Rwanda', sub_style))
-        story.append(HRFlowable(width="100%", thickness=2,
-            color=colors.HexColor('#1a3c5e'), spaceAfter=16))
+            'AI-Powered Document Classification and Contract Audit System', sub))
+        story.append(Paragraph(
+            'University of Kigali  -  BBIT 2026  -  Rwanda', sub))
+        story.append(HRFlowable(
+            width='100%', thickness=2,
+            color=colors.HexColor('#1a3c5e'), spaceAfter=14))
 
-        title_style = ParagraphStyle('T', fontSize=16,
-            fontName='Helvetica-Bold',
-            textColor=colors.white, alignment=1)
-        title_table = Table(
-            [[Paragraph('DOCUMENT AUDIT REPORT', title_style)]],
-            colWidths=[17*cm])
-        title_table.setStyle(TableStyle([
-            ('BACKGROUND',    (0,0), (-1,-1), colors.HexColor('#1a3c5e')),
-            ('TOPPADDING',    (0,0), (-1,-1), 14),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 14),
+        # Title banner
+        t_style = ParagraphStyle('ts', fontSize=16, fontName='Helvetica-Bold',
+                                  textColor=colors.white, alignment=1)
+        t_tbl = Table([[Paragraph('DOCUMENT AUDIT REPORT', t_style)]],
+                      colWidths=[17*cm])
+        t_tbl.setStyle(TableStyle([
+            ('BACKGROUND',    (0, 0), (-1, -1), colors.HexColor('#1a3c5e')),
+            ('TOPPADDING',    (0, 0), (-1, -1), 14),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 14),
         ]))
-        story.append(title_table)
-        story.append(Spacer(1, 16))
+        story.append(t_tbl)
+        story.append(Spacer(1, 14))
 
-        story.append(Paragraph('Document Information', section_style))
+        # Document info
+        story.append(Paragraph('Document Information', sec))
         uploaded_at = doc['uploaded_at']
         if isinstance(uploaded_at, datetime.datetime):
             uploaded_at = uploaded_at.strftime('%Y-%m-%d %H:%M')
 
-        info_data = [
+        info_rows = [
             ['Document Name',    doc['original_name']],
             ['Document Type',    doc['doc_type']],
             ['AI Confidence',    f"{doc['confidence']}%"],
@@ -735,137 +745,150 @@ def generate_report(doc_id):
             ['Upload Date',      str(uploaded_at)],
             ['Report Generated', datetime.datetime.now().strftime('%Y-%m-%d %H:%M')],
         ]
-        info_table = Table(info_data, colWidths=[5*cm, 12*cm])
-        info_table.setStyle(TableStyle([
-            ('FONTNAME',      (0,0), (0,-1), 'Helvetica-Bold'),
-            ('FONTNAME',      (1,0), (1,-1), 'Helvetica'),
-            ('FONTSIZE',      (0,0), (-1,-1), 10),
-            ('TEXTCOLOR',     (0,0), (0,-1), colors.HexColor('#1a3c5e')),
-            ('TEXTCOLOR',     (1,0), (1,-1), colors.HexColor('#333333')),
-            ('ROWBACKGROUNDS',(0,0), (-1,-1),
+        info_tbl = Table(info_rows, colWidths=[5*cm, 12*cm])
+        info_tbl.setStyle(TableStyle([
+            ('FONTNAME',      (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTNAME',      (1, 0), (1, -1), 'Helvetica'),
+            ('FONTSIZE',      (0, 0), (-1, -1), 10),
+            ('TEXTCOLOR',     (0, 0), (0, -1), colors.HexColor('#1a3c5e')),
+            ('TEXTCOLOR',     (1, 0), (1, -1), colors.HexColor('#333333')),
+            ('ROWBACKGROUNDS',(0, 0), (-1, -1),
                 [colors.HexColor('#f8fbff'), colors.white]),
-            ('TOPPADDING',    (0,0), (-1,-1), 8),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-            ('LEFTPADDING',   (0,0), (-1,-1), 10),
-            ('GRID',          (0,0), (-1,-1), 0.5, colors.HexColor('#e0e0e0')),
+            ('TOPPADDING',    (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+            ('LEFTPADDING',   (0, 0), (-1, -1), 10),
+            ('GRID',          (0, 0), (-1, -1), 0.5, colors.HexColor('#e0e0e0')),
         ]))
-        story.append(info_table)
-        story.append(Spacer(1, 16))
+        story.append(info_tbl)
+        story.append(Spacer(1, 14))
 
-        story.append(Paragraph('Compliance Score', section_style))
+        # Compliance score
+        story.append(Paragraph('Compliance Score', sec))
         score  = doc['compliance_score']
         passed = doc['clauses_passed']
         total  = doc['clauses_total']
         clr    = colors.HexColor(
             '#2e7d32' if score >= 80 else
-            '#e65100' if score >= 50 else '#c62828')
+            '#e65100' if score >= 50 else '#c62828'
+        )
         status_txt = (
             'FULLY COMPLIANT'     if score >= 80 else
             'PARTIALLY COMPLIANT' if score >= 50 else
-            'NON COMPLIANT')
-
-        score_table = Table(
+            'NON COMPLIANT'
+        )
+        sc_tbl = Table(
             [[f'{score}%', f'{passed}/{total}', status_txt],
              ['Compliance Score', 'Clauses Passed', 'Overall Status']],
-            colWidths=[5.6*cm, 5.6*cm, 5.6*cm])
-        score_table.setStyle(TableStyle([
-            ('FONTNAME',      (0,0), (-1,0), 'Helvetica-Bold'),
-            ('FONTSIZE',      (0,0), (-1,0), 22),
-            ('FONTNAME',      (0,1), (-1,1), 'Helvetica'),
-            ('FONTSIZE',      (0,1), (-1,1), 9),
-            ('TEXTCOLOR',     (0,0), (-1,0), clr),
-            ('TEXTCOLOR',     (0,1), (-1,1), colors.HexColor('#888888')),
-            ('ALIGN',         (0,0), (-1,-1), 'CENTER'),
-            ('BACKGROUND',    (0,0), (-1,-1), colors.HexColor('#f8fbff')),
-            ('TOPPADDING',    (0,0), (-1,-1), 14),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 14),
-            ('GRID',          (0,0), (-1,-1), 0.5, colors.HexColor('#e0e0e0')),
+            colWidths=[5.6*cm, 5.6*cm, 5.6*cm]
+        )
+        sc_tbl.setStyle(TableStyle([
+            ('FONTNAME',      (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE',      (0, 0), (-1, 0), 22),
+            ('FONTNAME',      (0, 1), (-1, 1), 'Helvetica'),
+            ('FONTSIZE',      (0, 1), (-1, 1), 9),
+            ('TEXTCOLOR',     (0, 0), (-1, 0), clr),
+            ('TEXTCOLOR',     (0, 1), (-1, 1), colors.HexColor('#888888')),
+            ('ALIGN',         (0, 0), (-1, -1), 'CENTER'),
+            ('BACKGROUND',    (0, 0), (-1, -1), colors.HexColor('#f8fbff')),
+            ('TOPPADDING',    (0, 0), (-1, -1), 14),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 14),
+            ('GRID',          (0, 0), (-1, -1), 0.5, colors.HexColor('#e0e0e0')),
         ]))
-        story.append(score_table)
-        story.append(Spacer(1, 16))
+        story.append(sc_tbl)
+        story.append(Spacer(1, 14))
 
-        story.append(Paragraph('Clause Audit Results', section_style))
-        clause_data = [['Clause', 'Status', 'Result']]
+        # Clause audit
+        story.append(Paragraph('Clause Audit Results', sec))
+        cl_data = [['Clause', 'Status', 'Result']]
         for c in clauses:
             ok = bool(c['status'])
-            clause_data.append([
+            cl_data.append([
                 c['clause'],
-                'FOUND'   if ok else 'MISSING',
-                'Compliant' if ok else 'Needs Attention'
+                'FOUND'     if ok else 'MISSING',
+                'Compliant' if ok else 'Needs Attention',
             ])
-
-        clause_table = Table(clause_data, colWidths=[8*cm, 4*cm, 5*cm])
-        clause_table.setStyle(TableStyle([
-            ('BACKGROUND',    (0,0), (-1,0), colors.HexColor('#1a3c5e')),
-            ('TEXTCOLOR',     (0,0), (-1,0), colors.white),
-            ('FONTNAME',      (0,0), (-1,0), 'Helvetica-Bold'),
-            ('FONTSIZE',      (0,0), (-1,0), 10),
-            ('ALIGN',         (0,0), (-1,0), 'CENTER'),
-            ('FONTNAME',      (0,1), (-1,-1), 'Helvetica'),
-            ('FONTSIZE',      (0,1), (-1,-1), 10),
-            ('ROWBACKGROUNDS',(0,1), (-1,-1),
+        cl_tbl = Table(cl_data, colWidths=[8*cm, 4*cm, 5*cm])
+        cl_tbl.setStyle(TableStyle([
+            ('BACKGROUND',    (0, 0), (-1, 0), colors.HexColor('#1a3c5e')),
+            ('TEXTCOLOR',     (0, 0), (-1, 0), colors.white),
+            ('FONTNAME',      (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE',      (0, 0), (-1, 0), 10),
+            ('ALIGN',         (0, 0), (-1, 0), 'CENTER'),
+            ('FONTNAME',      (0, 1), (-1, -1), 'Helvetica'),
+            ('FONTSIZE',      (0, 1), (-1, -1), 10),
+            ('ROWBACKGROUNDS',(0, 1), (-1, -1),
                 [colors.HexColor('#f8fbff'), colors.white]),
-            ('TOPPADDING',    (0,0), (-1,-1), 9),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 9),
-            ('LEFTPADDING',   (0,0), (-1,-1), 10),
-            ('GRID',          (0,0), (-1,-1), 0.5, colors.HexColor('#e0e0e0')),
+            ('TOPPADDING',    (0, 0), (-1, -1), 9),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 9),
+            ('LEFTPADDING',   (0, 0), (-1, -1), 10),
+            ('GRID',          (0, 0), (-1, -1), 0.5, colors.HexColor('#e0e0e0')),
         ]))
         for i, c in enumerate(clauses, start=1):
             ok  = bool(c['status'])
-            clr = colors.HexColor('#2e7d32' if ok else '#c62828')
-            clause_table.setStyle(TableStyle([
-                ('TEXTCOLOR', (1,i), (2,i), clr),
-                ('FONTNAME',  (1,i), (2,i), 'Helvetica-Bold'),
+            col = colors.HexColor('#2e7d32' if ok else '#c62828')
+            cl_tbl.setStyle(TableStyle([
+                ('TEXTCOLOR', (1, i), (2, i), col),
+                ('FONTNAME',  (1, i), (2, i), 'Helvetica-Bold'),
             ]))
-        story.append(clause_table)
-        story.append(Spacer(1, 16))
+        story.append(cl_tbl)
+        story.append(Spacer(1, 14))
 
+        # Text preview
         if doc.get('text_preview'):
-            story.append(Paragraph('Document Text Preview', section_style))
-            preview_style = ParagraphStyle('P', fontSize=9,
-                fontName='Helvetica',
+            story.append(Paragraph('Document Text Preview', sec))
+            preview = ParagraphStyle(
+                'prev', fontSize=9, fontName='Helvetica',
                 textColor=colors.HexColor('#555555'),
                 leading=14, backColor=colors.HexColor('#f8fbff'),
-                borderPadding=10)
-            preview_text = doc['text_preview'][:400].replace('\n', '<br/>')
-            story.append(Paragraph(preview_text, preview_style))
-            story.append(Spacer(1, 16))
+                borderPadding=10
+            )
+            story.append(Paragraph(
+                doc['text_preview'][:400].replace('\n', '<br/>'), preview))
+            story.append(Spacer(1, 14))
 
-        story.append(Paragraph('Recommendations', section_style))
-        missing = [c['clause'] for c in clauses if not bool(c['status'])]
+        # Recommendations
+        story.append(Paragraph('Recommendations', sec))
+        missing  = [c['clause'] for c in clauses if not bool(c['status'])]
         rec_text = (
             'This document is fully compliant. All required clauses have been '
-            'found and verified. No action is required at this time.'
+            'found and verified. No further action is required at this time.'
             if not missing else
             f'This document is missing {len(missing)} required clause(s): '
-            f'{", ".join(missing)}. It is recommended to review and update '
-            'the document before signing or submitting for approval.'
+            f'{", ".join(missing)}. Please review and update the document '
+            'before signing or submitting for approval.'
         )
-        rec_style = ParagraphStyle('R', fontSize=10, fontName='Helvetica',
-            textColor=colors.HexColor('#333333'), leading=16,
-            backColor=colors.HexColor('#e8f5e9' if not missing else '#fff3e0'),
-            borderPadding=12)
+        rec_bg = colors.HexColor('#e8f5e9' if not missing else '#fff3e0')
+        rec_style = ParagraphStyle(
+            'rec', fontSize=10, fontName='Helvetica',
+            textColor=colors.HexColor('#333333'),
+            leading=16, backColor=rec_bg, borderPadding=12
+        )
         story.append(Paragraph(rec_text, rec_style))
-        story.append(Spacer(1, 24))
+        story.append(Spacer(1, 20))
 
-        story.append(HRFlowable(width="100%", thickness=1,
-            color=colors.HexColor('#e0e0e0'), spaceAfter=10))
-        footer_style = ParagraphStyle('F', fontSize=8, fontName='Helvetica',
-            textColor=colors.HexColor('#aaaaaa'), alignment=1)
+        # Footer
+        story.append(HRFlowable(
+            width='100%', thickness=1,
+            color=colors.HexColor('#e0e0e0'), spaceAfter=8))
         story.append(Paragraph(
-            'AuditSmart v1.0  ·  Ruhorimbere Fred (2305001581)  ·  '
-            'Supervisor: Dr. Eustach Uwimana  ·  University of Kigali  ·  BBIT 2026',
-            footer_style))
+            'AuditSmart v1.0  |  Ruhorimbere Fred (2305001581)  |  '
+            'Supervisor: Dr. Eustach Uwimana  |  University of Kigali  |  BBIT 2026',
+            foot))
         story.append(Paragraph(
-            f'Generated on {datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}  ·  '
-            'AI-Powered Document Audit System  ·  Rwanda',
-            footer_style))
+            f'Generated: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}  |  '
+            'AI-Powered Document Audit System  |  Rwanda',
+            foot))
 
         pdf.build(story)
-        buffer.seek(0)
-        return send_file(buffer, mimetype='application/pdf',
+        buf.seek(0)
+
+        safe_type = doc['doc_type'].replace(' ', '_')
+        return send_file(
+            buf,
+            mimetype='application/pdf',
             as_attachment=True,
-            download_name=f'AuditSmart_Report_{doc["doc_type"].replace(" ","_")}_{doc_id}.pdf')
+            download_name=f'AuditSmart_Report_{safe_type}_{doc_id}.pdf'
+        )
 
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -881,17 +904,21 @@ def admin_get_users():
         payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
         db  = get_db()
         cur = db.cursor(dictionary=True)
-        cur.execute('SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
+        cur.execute(
+            'SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
         user = cur.fetchone()
         if not user or user['role'] != 'admin':
+            cur.close(); db.close()
             return jsonify({'status': 'error',
-                'message': 'Admin access required'}), 403
-        cur.execute('''SELECT u.user_id, u.full_name, u.email, u.company, u.role,
-                       u.created_at, COUNT(d.doc_id) as total_docs
-                       FROM users u
-                       LEFT JOIN documents d ON u.user_id = d.user_id
-                       GROUP BY u.user_id
-                       ORDER BY u.created_at DESC''')
+                            'message': 'Admin access required'}), 403
+        cur.execute(
+            '''SELECT u.user_id, u.full_name, u.email, u.company, u.role,
+                      u.created_at, COUNT(d.doc_id) as total_docs
+               FROM users u
+               LEFT JOIN documents d ON u.user_id = d.user_id
+               GROUP BY u.user_id
+               ORDER BY u.created_at DESC'''
+        )
         users = cur.fetchall()
         cur.close(); db.close()
         for u in users:
@@ -901,6 +928,7 @@ def admin_get_users():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
+
 @app.route('/api/admin/documents', methods=['GET'])
 def admin_get_documents():
     try:
@@ -909,17 +937,21 @@ def admin_get_documents():
         payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
         db  = get_db()
         cur = db.cursor(dictionary=True)
-        cur.execute('SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
+        cur.execute(
+            'SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
         user = cur.fetchone()
         if not user or user['role'] != 'admin':
+            cur.close(); db.close()
             return jsonify({'status': 'error',
-                'message': 'Admin access required'}), 403
-        cur.execute('''SELECT d.doc_id, d.original_name, d.doc_type,
-                       d.confidence, d.compliance_score, d.clauses_passed,
-                       d.clauses_total, d.uploaded_at, u.full_name, u.email
-                       FROM documents d
-                       JOIN users u ON d.user_id = u.user_id
-                       ORDER BY d.uploaded_at DESC''')
+                            'message': 'Admin access required'}), 403
+        cur.execute(
+            '''SELECT d.doc_id, d.original_name, d.doc_type,
+                      d.confidence, d.compliance_score, d.clauses_passed,
+                      d.clauses_total, d.uploaded_at, u.full_name, u.email
+               FROM documents d
+               JOIN users u ON d.user_id = u.user_id
+               ORDER BY d.uploaded_at DESC'''
+        )
         docs = cur.fetchall()
         cur.close(); db.close()
         for d in docs:
@@ -929,6 +961,7 @@ def admin_get_documents():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
+
 @app.route('/api/admin/stats', methods=['GET'])
 def admin_stats():
     try:
@@ -937,11 +970,13 @@ def admin_stats():
         payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
         db  = get_db()
         cur = db.cursor(dictionary=True)
-        cur.execute('SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
+        cur.execute(
+            'SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
         user = cur.fetchone()
         if not user or user['role'] != 'admin':
+            cur.close(); db.close()
             return jsonify({'status': 'error',
-                'message': 'Admin access required'}), 403
+                            'message': 'Admin access required'}), 403
         cur.execute('SELECT COUNT(*) as total FROM users')
         total_users = cur.fetchone()['total']
         cur.execute('SELECT COUNT(*) as total FROM documents')
@@ -970,9 +1005,6 @@ def admin_stats():
 @app.route('/api/evaluation', methods=['GET'])
 def get_evaluation():
     try:
-        from sklearn.metrics import precision_score, recall_score, f1_score
-        from sklearn.model_selection import cross_val_predict
-
         texts, labels = [], []
         for label, samples in TRAINING_DATA.items():
             for text in samples:
@@ -1015,9 +1047,9 @@ def get_evaluation():
                 'f1_score':  f1,
                 'accuracy':  round((precision + recall + f1) / 3, 2),
             },
-            'per_class':      per_class,
-            'total_samples':  len(texts),
-            'total_classes':  len(classes),
+            'per_class':     per_class,
+            'total_samples': len(texts),
+            'total_classes': len(classes),
         })
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -1032,13 +1064,13 @@ def submit_feedback():
         token   = auth.replace('Bearer ', '')
         payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
         user_id = payload['user_id']
-        d       = request.get_json() or {}
-        rating  = d.get('rating', 0)
-        category= d.get('category', '')
-        message = d.get('message', '').strip()
+        d        = request.get_json() or {}
+        rating   = d.get('rating', 0)
+        category = d.get('category', '')
+        message  = d.get('message', '').strip()
         if not message or not rating:
             return jsonify({'status': 'error',
-                'message': 'Rating and message required'}), 400
+                            'message': 'Rating and message required'}), 400
         db  = get_db()
         cur = db.cursor()
         cur.execute(
@@ -1048,9 +1080,10 @@ def submit_feedback():
         db.commit()
         cur.close(); db.close()
         return jsonify({'status': 'success',
-            'message': 'Feedback submitted successfully!'})
+                        'message': 'Feedback submitted successfully!'})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
 
 @app.route('/api/feedback', methods=['GET'])
 def get_feedback():
@@ -1060,23 +1093,27 @@ def get_feedback():
         payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
         db  = get_db()
         cur = db.cursor(dictionary=True)
-        cur.execute('SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
+        cur.execute(
+            'SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
         user = cur.fetchone()
         if not user or user['role'] != 'admin':
+            cur.close(); db.close()
             return jsonify({'status': 'error',
-                'message': 'Admin access required'}), 403
-        cur.execute('''SELECT f.feedback_id, f.rating, f.category,
-                       f.message, f.created_at, u.full_name, u.email
-                       FROM feedback f
-                       JOIN users u ON f.user_id = u.user_id
-                       ORDER BY f.created_at DESC''')
+                            'message': 'Admin access required'}), 403
+        cur.execute(
+            '''SELECT f.feedback_id, f.rating, f.category, f.message,
+                      f.created_at, u.full_name, u.email
+               FROM feedback f
+               JOIN users u ON f.user_id = u.user_id
+               ORDER BY f.created_at DESC'''
+        )
         feedbacks = cur.fetchall()
         cur.close(); db.close()
         for f in feedbacks:
             if isinstance(f.get('created_at'), datetime.datetime):
                 f['created_at'] = f['created_at'].strftime('%Y-%m-%d %H:%M')
-        avg = round(sum(f['rating'] for f in feedbacks) / len(feedbacks), 1) \
-            if feedbacks else 0
+        avg = (round(sum(f['rating'] for f in feedbacks) / len(feedbacks), 1)
+               if feedbacks else 0)
         return jsonify({
             'status':     'success',
             'feedbacks':  feedbacks,
@@ -1087,7 +1124,7 @@ def get_feedback():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 # =============================================================
-# STATUS & PAGES
+# STATUS AND PAGES
 # =============================================================
 @app.route('/api/status')
 def status():
@@ -1099,13 +1136,16 @@ def status():
         'doc_types': DOCUMENT_TYPES,
     })
 
+
 @app.route('/')
 def index():
     return render_template('index.html')
 
+
 @app.route('/dashboard')
 def dashboard():
     return render_template('dashboard.html')
+
 
 @app.route('/admin')
 def admin_page():
