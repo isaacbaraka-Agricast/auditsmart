@@ -688,12 +688,14 @@ def generate_report(doc_id):
                     topMargin=2*cm, bottomMargin=2*cm)
         story  = []
 
-        header_style = ParagraphStyle('H', fontSize=22,
-            fontName='Helvetica-Bold',
-            textColor=colors.HexColor('#1a3c5e'), spaceAfter=4)
-        sub_style = ParagraphStyle('S', fontSize=10,
-            fontName='Helvetica',
-            textColor=colors.HexColor('#888888'), spaceAfter=2)
+       header_style = ParagraphStyle('H', fontSize=22,
+    fontName='Helvetica-Bold',
+    textColor=colors.HexColor('#1a3c5e'),
+    spaceAfter=8, spaceBefore=4)
+sub_style = ParagraphStyle('S', fontSize=10,
+    fontName='Helvetica',
+    textColor=colors.HexColor('#888888'),
+    spaceAfter=6)
         section_style = ParagraphStyle('Sec', fontSize=13,
             fontName='Helvetica-Bold',
             textColor=colors.HexColor('#1a3c5e'),
