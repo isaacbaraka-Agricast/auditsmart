@@ -19,12 +19,12 @@
       border-radius: 20px;
       padding: 40px;
       width: 100%;
-      max-width: 420px;
+      max-width: 440px;
       box-shadow: 0 20px 60px rgba(0,0,0,0.3);
     }
-    .logo { text-align: center; margin-bottom: 30px; }
+    .logo { text-align: center; margin-bottom: 24px; }
     .logo h1 { font-size: 28px; font-weight: 800; color: #1a3c5e; }
-    .logo p { color: #6c757d; font-size: 13px; margin-top: 4px; }
+    .logo p  { color: #6c757d; font-size: 13px; margin-top: 4px; }
     .logo .icon { font-size: 48px; margin-bottom: 10px; }
     .form-control {
       border-radius: 10px; padding: 12px 16px;
@@ -40,82 +40,115 @@
       font-weight: 700; font-size: 15px; width: 100%;
     }
     .btn-primary:hover { background: #0f2740; }
-    .divider { text-align: center; color: #aaa; margin: 16px 0; font-size: 13px; }
     .alert { border-radius: 10px; font-size: 13px; }
     .tab-btn {
       flex: 1; padding: 10px; border: none;
       background: #f5f5f5; font-weight: 600;
       font-size: 14px; cursor: pointer; transition: all 0.2s;
     }
-    .tab-btn.active {
-      background: #1a3c5e; color: white;
-    }
+    .tab-btn.active { background: #1a3c5e; color: white; }
     .tab-btn:first-child { border-radius: 10px 0 0 10px; }
     .tab-btn:last-child  { border-radius: 0 10px 10px 0; }
     .footer-text {
       text-align: center; margin-top: 20px;
       font-size: 11px; color: #aaa;
     }
+    select.form-control { cursor: pointer; }
   </style>
 </head>
 <body>
 <div class="login-card">
+
+  <!-- Logo -->
   <div class="logo">
     <div class="icon">🏛️</div>
     <h1>AuditSmart</h1>
-    <p>AI-Powered Document Classification & Contract Audit</p>
-<p style="font-size:12px;color:#1a3c5e;font-weight:700;margin-top:4px;">
-  Kigali Global Suppliers & Contractors
-</p>
-    <p style="font-size:11px;color:#aaa;margin-top:4px;">
+    <p>AI-Powered Document Classification &amp; Contract Audit</p>
+    <p style="font-size:12px;color:#1a3c5e;font-weight:700;margin-top:4px;">
+      Kigali Global Suppliers &amp; Contractors
+    </p>
+    <p style="font-size:11px;color:#aaa;margin-top:2px;">
       University of Kigali · BBIT 2026
     </p>
   </div>
 
-  <!-- Tab buttons -->
+  <!-- Tabs -->
   <div style="display:flex;margin-bottom:20px;">
-    <button class="tab-btn active" id="loginTab" onclick="showTab('login')">Sign In</button>
-    <button class="tab-btn" id="registerTab" onclick="showTab('register')">Create Account</button>
+    <button class="tab-btn active" id="loginTab"
+      onclick="showTab('login')">Sign In</button>
+    <button class="tab-btn" id="registerTab"
+      onclick="showTab('register')">Create Account</button>
   </div>
 
-  <!-- Error/Success -->
+  <!-- Alert -->
   <div id="alertBox" style="display:none;" class="alert"></div>
 
-  <!-- LOGIN FORM -->
+  <!-- ───── LOGIN FORM ───── -->
   <div id="loginForm">
     <div class="mb-3">
-      <label class="form-label fw-600" style="font-size:13px;font-weight:600;">Email Address</label>
-      <input type="email" class="form-control" id="loginEmail" placeholder="your@email.com"/>
+      <label class="form-label fw-600"
+        style="font-size:13px;font-weight:600;">Email Address</label>
+      <input type="email" class="form-control" id="loginEmail"
+        placeholder="your@email.com"/>
     </div>
     <div class="mb-3">
-      <label class="form-label" style="font-size:13px;font-weight:600;">Password</label>
-      <input type="password" class="form-control" id="loginPass" placeholder="Enter password"/>
+      <label class="form-label"
+        style="font-size:13px;font-weight:600;">Password</label>
+      <input type="password" class="form-control" id="loginPass"
+        placeholder="Enter password"/>
     </div>
     <button class="btn btn-primary mt-2" onclick="doLogin()">
       <i class="fas fa-sign-in-alt me-2"></i>Sign In
     </button>
   </div>
 
-  <!-- REGISTER FORM -->
+  <!-- ───── REGISTER FORM ───── -->
   <div id="registerForm" style="display:none;">
     <div class="mb-3">
-      <label class="form-label" style="font-size:13px;font-weight:600;">Full Name</label>
-      <input type="text" class="form-control" id="regName" placeholder="Your full name"/>
+      <label class="form-label"
+        style="font-size:13px;font-weight:600;">Full Name</label>
+      <input type="text" class="form-control" id="regName"
+        placeholder="Your full name"/>
     </div>
+
     <div class="mb-3">
-      <label class="form-label" style="font-size:13px;font-weight:600;">Email Address</label>
-      <input type="email" class="form-control" id="regEmail" placeholder="your@email.com"/>
+      <label class="form-label"
+        style="font-size:13px;font-weight:600;">Email Address</label>
+      <input type="email" class="form-control" id="regEmail"
+        placeholder="your@email.com"/>
     </div>
+
     <div class="mb-3">
-      <label class="form-label" style="font-size:13px;font-weight:600;">Company / Organization</label>
-      <input type="text" class="form-control" id="regCompany" 
-  value="Kigali Global Suppliers and Contractors" readonly
-  style="background:#f5f5f5;color:#555;"/>
+      <label class="form-label"
+        style="font-size:13px;font-weight:600;">Company / Organization</label>
+      <input type="text" class="form-control" id="regCompany"
+        value="Kigali Global Suppliers and Contractors"
+        readonly style="background:#f5f5f5;color:#555;"/>
     </div>
+
     <div class="mb-3">
-      <label class="form-label" style="font-size:13px;font-weight:600;">Password</label>
-      <input type="password" class="form-control" id="regPass" placeholder="Min 6 characters"/>
+      <label class="form-label"
+        style="font-size:13px;font-weight:600;">Department</label>
+      <select class="form-control" id="regDepartment">
+        <option value="">-- Select your department --</option>
+        <option value="Procurement">Procurement Department</option>
+        <option value="Finance">Finance Department</option>
+        <option value="Legal">Legal Department</option>
+        <option value="Operations">Operations Department</option>
+        <option value="Human Resources">Human Resources Department</option>
+        <option value="Management">Management</option>
+        <option value="IT">IT Department</option>
+        <option value="Administration">Administration</option>
+      </select>
     </div>
+
+    <div class="mb-3">
+      <label class="form-label"
+        style="font-size:13px;font-weight:600;">Password</label>
+      <input type="password" class="form-control" id="regPass"
+        placeholder="Min 6 characters"/>
+    </div>
+
     <button class="btn btn-primary mt-2" onclick="doRegister()">
       <i class="fas fa-user-plus me-2"></i>Create Account
     </button>
@@ -130,14 +163,18 @@
   const API = '';
 
   function showTab(tab) {
-    document.getElementById('loginForm').style.display    = tab === 'login'    ? 'block' : 'none';
-    document.getElementById('registerForm').style.display = tab === 'register' ? 'block' : 'none';
-    document.getElementById('loginTab').classList.toggle('active',    tab === 'login');
-    document.getElementById('registerTab').classList.toggle('active', tab === 'register');
+    document.getElementById('loginForm').style.display =
+      tab === 'login' ? 'block' : 'none';
+    document.getElementById('registerForm').style.display =
+      tab === 'register' ? 'block' : 'none';
+    document.getElementById('loginTab').classList.toggle('active',
+      tab === 'login');
+    document.getElementById('registerTab').classList.toggle('active',
+      tab === 'register');
     hideAlert();
   }
 
-  function showAlert(msg, type='danger') {
+  function showAlert(msg, type = 'danger') {
     const box = document.getElementById('alertBox');
     box.className = `alert alert-${type}`;
     box.textContent = msg;
@@ -151,12 +188,14 @@
   async function doLogin() {
     const email = document.getElementById('loginEmail').value.trim();
     const pass  = document.getElementById('loginPass').value;
-    if (!email || !pass) { showAlert('Please enter email and password'); return; }
+    if (!email || !pass) {
+      showAlert('Please enter email and password'); return;
+    }
     try {
       const res  = await fetch(`${API}/api/login`, {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password: pass }),
+        body:    JSON.stringify({ email, password: pass }),
       });
       const data = await res.json();
       if (data.status === 'success') {
@@ -166,22 +205,39 @@
       } else {
         showAlert(data.message || 'Login failed');
       }
-    } catch(e) {
+    } catch (e) {
       showAlert('Cannot connect to server');
     }
   }
 
   async function doRegister() {
-    const name    = document.getElementById('regName').value.trim();
-    const email   = document.getElementById('regEmail').value.trim();
-    const company = document.getElementById('regCompany').value.trim();
-    const pass    = document.getElementById('regPass').value;
-    if (!name || !email || !pass) { showAlert('Please fill all fields'); return; }
+    const name       = document.getElementById('regName').value.trim();
+    const email      = document.getElementById('regEmail').value.trim();
+    const company    = document.getElementById('regCompany').value.trim();
+    const department = document.getElementById('regDepartment').value;
+    const pass       = document.getElementById('regPass').value;
+
+    if (!name || !email || !pass) {
+      showAlert('Please fill in all fields'); return;
+    }
+    if (!department) {
+      showAlert('Please select your department'); return;
+    }
+    if (pass.length < 6) {
+      showAlert('Password must be at least 6 characters'); return;
+    }
+
     try {
       const res  = await fetch(`${API}/api/register`, {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ full_name: name, email, password: pass, company }),
+        body:    JSON.stringify({
+          full_name:  name,
+          email,
+          password:   pass,
+          company,
+          department,
+        }),
       });
       const data = await res.json();
       if (data.status === 'success') {
@@ -191,13 +247,13 @@
       } else {
         showAlert(data.message || 'Registration failed');
       }
-    } catch(e) {
+    } catch (e) {
       showAlert('Cannot connect to server');
     }
   }
 
   // Press Enter to login
-  document.addEventListener('keypress', function(e) {
+  document.addEventListener('keypress', function (e) {
     if (e.key === 'Enter') doLogin();
   });
 </script>
