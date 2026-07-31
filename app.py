@@ -358,34 +358,20 @@ def generate_token(user_id, email):
 # =============================================================
 # DATABASE INIT
 # =============================================================
-@app.route('/admin/add_department', methods=['POST'])
-def add_department():
-    try:
-        db  = get_db()
-        cur = db.cursor()
-        cur.execute('''ALTER TABLE users 
-            ADD COLUMN IF NOT EXISTS department VARCHAR(100) AFTER company''')
-        db.commit()
-        cur.close(); db.close()
-        return jsonify({'status': 'success', 
-            'message': 'Department column added!'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
 @app.route('/admin/init_db', methods=['POST'])
 def init_db():
     try:
         db  = get_db()
         cur = db.cursor()
         cur.execute('''CREATE TABLE IF NOT EXISTS users (
-    user_id    INT AUTO_INCREMENT PRIMARY KEY,
-    full_name  VARCHAR(100) NOT NULL,
-    email      VARCHAR(100) UNIQUE NOT NULL,
-    password   VARCHAR(255) NOT NULL,
-    company    VARCHAR(100),
-    department VARCHAR(100),
-    role       VARCHAR(20) DEFAULT 'user',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)''')
+            user_id    INT AUTO_INCREMENT PRIMARY KEY,
+            full_name  VARCHAR(100) NOT NULL,
+            email      VARCHAR(100) UNIQUE NOT NULL,
+            password   VARCHAR(255) NOT NULL,
+            company    VARCHAR(100),
+            role       VARCHAR(20) DEFAULT 'user',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
         cur.execute('''CREATE TABLE IF NOT EXISTS documents (
             doc_id           INT AUTO_INCREMENT PRIMARY KEY,
             user_id          INT NOT NULL,
@@ -432,17 +418,15 @@ def register():
         name    = d.get('full_name', '').strip()
         email   = d.get('email', '').strip().lower()
         pwd     = d.get('password', '')
-        company    = d.get('company', '').strip()
-department = d.get('department', '').strip()
-if not name or not email or not pwd:
+        company = d.get('company', '').strip()
+        if not name or not email or not pwd:
             return jsonify({'status': 'error',
                             'message': 'All fields required'}), 400
         db  = get_db()
         cur = db.cursor()
-cur.execute(
-    'INSERT INTO users (full_name, email, password, company, department) VALUES (%s,%s,%s,%s,%s)',
-    (name, email, hash_password(pwd), company, department)
-)
+        cur.execute(
+            'INSERT INTO users (full_name, email, password, company) VALUES (%s,%s,%s,%s)',
+            (name, email, hash_password(pwd), company)
         )
         db.commit()
         user_id = cur.lastrowid
