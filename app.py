@@ -28,7 +28,9 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import precision_score, recall_score, f1_score
 from sklearn.model_selection import cross_val_predict
 
-import mysql.connector
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from psycopg2 import IntegrityError
 
 # =============================================================
 # APP SETUP
@@ -47,24 +49,13 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 # =============================================================
 # DATABASE
 # =============================================================
-_mysql_url = os.environ.get('MYSQL_URL', '')
-if _mysql_url:
-    _p = urlparse(_mysql_url)
-    DB_CONFIG = dict(
-        host=_p.hostname,
-        port=_p.port or 3306,
-        user=_p.username,
-        password=_p.password,
-        database=_p.path.lstrip('/')
-    )
-else:
-    DB_CONFIG = dict(
-        host='localhost', user='root',
-        password='', database='auditsmart_db'
-    )
+# PostgreSQL / Neon database
+_DATABASE_URL = os.environ.get('DATABASE_URL', '')
 
 def get_db():
-    return mysql.connector.connect(**DB_CONFIG)
+    if not _DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not set")
+    return psycopg2.connect(_DATABASE_URL)
 
 # =============================================================
 # DOCUMENT TYPES
@@ -364,7 +355,7 @@ def init_db():
         db  = get_db()
         cur = db.cursor()
         cur.execute('''CREATE TABLE IF NOT EXISTS users (
-            user_id    INT AUTO_INCREMENT PRIMARY KEY,
+            user_id    SERIAL PRIMARY KEY,
             full_name  VARCHAR(100) NOT NULL,
             email      VARCHAR(100) UNIQUE NOT NULL,
             password   VARCHAR(255) NOT NULL,
@@ -373,7 +364,7 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
         cur.execute('''CREATE TABLE IF NOT EXISTS documents (
-            doc_id           INT AUTO_INCREMENT PRIMARY KEY,
+            doc_id SERIAL PRIMARY KEY,
             user_id          INT NOT NULL,
             filename         VARCHAR(255),
             original_name    VARCHAR(255),
@@ -387,14 +378,14 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )''')
         cur.execute('''CREATE TABLE IF NOT EXISTS audit_results (
-            result_id INT AUTO_INCREMENT PRIMARY KEY,
+            result_id SERIAL PRIMARY KEY,
             doc_id    INT NOT NULL,
             clause    VARCHAR(100),
             status    BOOLEAN,
             FOREIGN KEY (doc_id) REFERENCES documents(doc_id)
         )''')
         cur.execute('''CREATE TABLE IF NOT EXISTS feedback (
-            feedback_id INT AUTO_INCREMENT PRIMARY KEY,
+            feedback_id SERIAL PRIMARY KEY,
             user_id     INT NOT NULL,
             rating      INT NOT NULL,
             category    VARCHAR(50),
@@ -419,36 +410,57 @@ def register():
         email   = d.get('email', '').strip().lower()
         pwd     = d.get('password', '')
         company = d.get('company', '').strip()
+
         if not name or not email or not pwd:
-            return jsonify({'status': 'error',
-                            'message': 'All fields required'}), 400
-        db  = get_db()
+            return jsonify({
+                'status': 'error',
+                'message': 'All fields required'
+            }), 400
+
+        db = get_db()
         cur = db.cursor()
+
         cur.execute(
             'INSERT INTO users (full_name, email, password, company) VALUES (%s,%s,%s,%s)',
             (name, email, hash_password(pwd), company)
         )
+
         db.commit()
-        user_id = cur.lastrowid
+
+        cur.execute(
+            'SELECT user_id FROM users WHERE email=%s',
+            (email,)
+        )
+        user_id = cur.fetchone()[0]
+
         cur.close()
         db.close()
+
         token = generate_token(user_id, email)
+
         return jsonify({
-            'status':  'success',
+            'status': 'success',
             'message': 'Account created!',
-            'token':   token,
-            'user':    {
-                'user_id':   user_id,
+            'token': token,
+            'user': {
+                'user_id': user_id,
                 'full_name': name,
-                'email':     email,
-                'company':   company,
+                'email': email,
+                'company': company
             }
         })
-    except mysql.connector.IntegrityError:
-        return jsonify({'status': 'error',
-                        'message': 'Email already registered'}), 409
+
+    except IntegrityError:
+        return jsonify({
+            'status': 'error',
+            'message': 'Email already registered'
+        }), 409
+
     except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 
 @app.route('/api/login', methods=['POST'])
@@ -461,7 +473,7 @@ def login():
             return jsonify({'status': 'error',
                             'message': 'Email and password required'}), 400
         db  = get_db()
-        cur = db.cursor(dictionary=True)
+        cur = db.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             'SELECT * FROM users WHERE email=%s AND password=%s',
             (email, hash_password(pwd))
@@ -527,11 +539,12 @@ def upload_document():
             '''INSERT INTO documents
                (user_id, filename, original_name, doc_type, confidence,
                 compliance_score, clauses_passed, clauses_total, text_preview)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               RETURNING doc_id''',
             (user_id, saved_name, filename, doc_type, confidence,
              score, passed, total, text[:500])
         )
-        doc_id = cur.lastrowid
+        doc_id = cur.fetchone()[0]
         for clause, status in clauses.items():
             cur.execute(
                 'INSERT INTO audit_results (doc_id, clause, status) VALUES (%s,%s,%s)',
@@ -571,7 +584,7 @@ def get_documents():
         user_id = payload['user_id']
 
         db  = get_db()
-        cur = db.cursor(dictionary=True)
+        cur = db.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             '''SELECT doc_id, original_name, doc_type, confidence,
                       compliance_score, clauses_passed, clauses_total, uploaded_at
@@ -596,7 +609,7 @@ def get_documents():
 def get_document_detail(doc_id):
     try:
         db  = get_db()
-        cur = db.cursor(dictionary=True)
+        cur = db.cursor(cursor_factory=RealDictCursor)
         cur.execute('SELECT * FROM documents WHERE doc_id=%s', (doc_id,))
         doc = cur.fetchone()
         cur.execute(
@@ -628,7 +641,7 @@ def get_stats():
         user_id = payload['user_id']
 
         db  = get_db()
-        cur = db.cursor(dictionary=True)
+        cur = db.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             'SELECT COUNT(*) as total FROM documents WHERE user_id=%s', (user_id,))
         total = cur.fetchone()['total']
@@ -669,7 +682,7 @@ def generate_report(doc_id):
         from reportlab.lib.units import cm
 
         db  = get_db()
-        cur = db.cursor(dictionary=True)
+        cur = db.cursor(cursor_factory=RealDictCursor)
         cur.execute('SELECT * FROM documents WHERE doc_id=%s', (doc_id,))
         doc = cur.fetchone()
         cur.execute(
@@ -903,7 +916,7 @@ def admin_get_users():
         token   = auth.replace('Bearer ', '')
         payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
         db  = get_db()
-        cur = db.cursor(dictionary=True)
+        cur = db.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             'SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
         user = cur.fetchone()
@@ -936,7 +949,7 @@ def admin_get_documents():
         token   = auth.replace('Bearer ', '')
         payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
         db  = get_db()
-        cur = db.cursor(dictionary=True)
+        cur = db.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             'SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
         user = cur.fetchone()
@@ -969,7 +982,7 @@ def admin_stats():
         token   = auth.replace('Bearer ', '')
         payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
         db  = get_db()
-        cur = db.cursor(dictionary=True)
+        cur = db.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             'SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
         user = cur.fetchone()
@@ -1092,7 +1105,7 @@ def get_feedback():
         token   = auth.replace('Bearer ', '')
         payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
         db  = get_db()
-        cur = db.cursor(dictionary=True)
+        cur = db.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             'SELECT role FROM users WHERE user_id=%s', (payload['user_id'],))
         user = cur.fetchone()
