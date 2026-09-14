@@ -193,7 +193,7 @@
       if (data.status === 'success') {
         localStorage.setItem('token', data.token);
         localStorage.setItem('user',  JSON.stringify(data.user));
-        window.location.href = '/dashboard';
+        window.location.href = data.user.role === 'admin' ? '/admin' : '/dashboard';
       } else {
         showAlert(data.message || 'Login failed');
       }
