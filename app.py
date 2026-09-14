@@ -400,6 +400,81 @@ def init_db():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 # =============================================================
+# ADMIN ACCOUNT SETUP
+# =============================================================
+def admin_setup():
+    try:
+    
+        d = request.get_json() or {}
+        name = d.get('full_name', '').strip()
+        email = d.get('email', '').strip().lower()
+        pwd = d.get('password', '')
+        company = d.get('company', '').strip()
+
+        if not name or not email or not pwd:
+            return jsonify({
+                'status': 'error',
+                'message': 'Full name, email and password are required'
+            }), 400
+
+        if len(pwd) < 8:
+            return jsonify({
+                'status': 'error',
+                'message': 'Admin password must be at least 8 characters'
+            }), 400
+
+        db = get_db()
+        cur = db.cursor()
+
+        cur.execute(
+            '''SELECT user_id FROM users
+               WHERE role='admin' OR email=%s''',
+            (email,)
+        )
+        existing = cur.fetchone()
+
+        if existing:
+            cur.execute(
+                '''UPDATE users
+                   SET full_name=%s,
+                       email=%s,
+                       password=%s,
+                       company=%s,
+                       role='admin'
+                   WHERE user_id=%s''',
+                (name, email, hash_password(pwd), company, existing[0])
+            )
+        else:
+            cur.execute(
+                '''INSERT INTO users
+                   (full_name, email, password, company, role)
+                   VALUES (%s,%s,%s,%s,'admin')''',
+                (name, email, hash_password(pwd), company)
+            )
+
+        db.commit()
+        cur.close()
+        db.close()
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Admin account created successfully'
+        })
+
+    except IntegrityError:
+        return jsonify({
+            'status': 'error',
+            'message': 'Email already registered'
+        }), 409
+
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+
+# =============================================================
 # AUTH ROUTES
 # =============================================================
 @app.route('/api/register', methods=['POST'])
@@ -608,26 +683,193 @@ def get_documents():
 @app.route('/api/documents/<int:doc_id>', methods=['GET'])
 def get_document_detail(doc_id):
     try:
-        db  = get_db()
+        auth = request.headers.get('Authorization', '')
+        token = auth.replace('Bearer ', '')
+        payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
+        user_id = payload['user_id']
+
+        db = get_db()
         cur = db.cursor(cursor_factory=RealDictCursor)
-        cur.execute('SELECT * FROM documents WHERE doc_id=%s', (doc_id,))
-        doc = cur.fetchone()
+
         cur.execute(
-            'SELECT clause, status FROM audit_results WHERE doc_id=%s', (doc_id,))
+            'SELECT role FROM users WHERE user_id=%s',
+            (user_id,)
+        )
+        user = cur.fetchone()
+
+        if not user:
+            cur.close()
+            db.close()
+            return jsonify({'status': 'error',
+                            'message': 'User not found'}), 401
+
+        if user['role'] == 'admin':
+            cur.execute(
+                'SELECT * FROM documents WHERE doc_id=%s',
+                (doc_id,)
+            )
+        else:
+            cur.execute(
+                'SELECT * FROM documents WHERE doc_id=%s AND user_id=%s',
+                (doc_id, user_id)
+            )
+
+        doc = cur.fetchone()
+
+        cur.execute(
+            'SELECT clause, status FROM audit_results WHERE doc_id=%s',
+            (doc_id,)
+        )
         clauses = cur.fetchall()
+
         cur.close()
         db.close()
 
         if not doc:
             return jsonify({'status': 'error',
-                            'message': 'Document not found'}), 404
+                            'message': 'Document not found or access denied'}), 404
 
         if isinstance(doc.get('uploaded_at'), datetime.datetime):
             doc['uploaded_at'] = doc['uploaded_at'].strftime('%Y-%m-%d %H:%M')
 
-        return jsonify({'status': 'success', 'document': doc, 'clauses': clauses})
+        return jsonify({
+            'status': 'success',
+            'document': doc,
+            'clauses': clauses
+        })
+
+    except jwt.ExpiredSignatureError:
+        return jsonify({'status': 'error', 'message': 'Session expired'}), 401
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/admin/documents/<int:doc_id>/download', methods=['GET'])
+def admin_download_document(doc_id):
+    try:
+        auth = request.headers.get('Authorization', '')
+        token = auth.replace('Bearer ', '')
+        payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
+
+        db = get_db()
+        cur = db.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute(
+            'SELECT role FROM users WHERE user_id=%s',
+            (payload['user_id'],)
+        )
+        user = cur.fetchone()
+
+        if not user or user['role'] != 'admin':
+            cur.close()
+            db.close()
+            return jsonify({
+                'status': 'error',
+                'message': 'Admin access required'
+            }), 403
+
+        cur.execute(
+            'SELECT filename, original_name FROM documents WHERE doc_id=%s',
+            (doc_id,)
+        )
+        doc = cur.fetchone()
+
+        cur.close()
+        db.close()
+
+        if not doc:
+            return jsonify({
+                'status': 'error',
+                'message': 'Document not found'
+            }), 404
+
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], doc['filename'])
+
+        if not os.path.exists(filepath):
+            return jsonify({
+                'status': 'error',
+                'message': 'Uploaded file no longer exists on server'
+            }), 404
+
+        return send_file(
+            filepath,
+            as_attachment=True,
+            download_name=doc['original_name']
+        )
+
+    except jwt.ExpiredSignatureError:
+        return jsonify({'status': 'error', 'message': 'Session expired'}), 401
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/admin/documents/<int:doc_id>', methods=['DELETE'])
+def admin_delete_document(doc_id):
+    try:
+        auth = request.headers.get('Authorization', '')
+        token = auth.replace('Bearer ', '')
+        payload = jwt.decode(token, app.secret_key, algorithms=['HS256'])
+
+        db = get_db()
+        cur = db.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute(
+            'SELECT role FROM users WHERE user_id=%s',
+            (payload['user_id'],)
+        )
+        user = cur.fetchone()
+
+        if not user or user['role'] != 'admin':
+            cur.close()
+            db.close()
+            return jsonify({
+                'status': 'error',
+                'message': 'Admin access required'
+            }), 403
+
+        cur.execute(
+            'SELECT filename FROM documents WHERE doc_id=%s',
+            (doc_id,)
+        )
+        doc = cur.fetchone()
+
+        if not doc:
+            cur.close()
+            db.close()
+            return jsonify({
+                'status': 'error',
+                'message': 'Document not found'
+            }), 404
+
+        cur.execute(
+            'DELETE FROM audit_results WHERE doc_id=%s',
+            (doc_id,)
+        )
+
+        cur.execute(
+            'DELETE FROM documents WHERE doc_id=%s',
+            (doc_id,)
+        )
+
+        db.commit()
+        cur.close()
+        db.close()
+
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], doc['filename'])
+
+        if os.path.exists(filepath):
+            os.remove(filepath)
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Document deleted successfully'
+        })
+
+    except jwt.ExpiredSignatureError:
+        return jsonify({'status': 'error', 'message': 'Session expired'}), 401
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 
 # =============================================================
 # STATS
